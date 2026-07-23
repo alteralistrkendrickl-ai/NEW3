@@ -117,6 +117,10 @@ def epoch_threshold_type(value):
         raise argparse.ArgumentTypeError(f"Invalid threshold value: {value}")
 
 
+def is_joint_interference_method(method_name):
+    return method_name in {"NEW3", "RobustSEI"}
+
+
 def TSLA_add_args(parser, seq_len=4800, patch_size=32, num_channels=2, emb_dim=256, depth=3, dropout_rate=0.3):
     parser.add_argument("--TSLA_len", type=int, default=seq_len)
     parser.add_argument("--TSLA_patch", type=int, default=patch_size)
@@ -203,11 +207,13 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     method_name = opt.method_name.strip()
     if method_name.upper() == "NEW3":
         method_name = "NEW3"
-    if method_name == "NEW3" and opt.TSLA_emb == 256 and not explicit_tsla_conf:
+    if method_name.lower() in {"robustsei", "robust_sei"}:
+        method_name = "RobustSEI"
+    if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    loss_item = ["id", "inv", "adv", "int", "mask"] if method_name == "NEW3" and opt.use_lfdb else ["rot_cls", "sei_cls", "mml"]
-    if opt.use_lfdb and method_name != "NEW3":
+    loss_item = ["id", "inv", "adv", "int", "mask"] if is_joint_interference_method(method_name) and opt.use_lfdb else ["rot_cls", "sei_cls", "mml"]
+    if opt.use_lfdb and not is_joint_interference_method(method_name):
         loss_item.extend(["con", "adv", "ch", "mask"])
     ablate_item = ([opt.ablate] if not isinstance(opt.ablate, list) else opt.ablate) if opt.ablate else []
     exp_suffix = ""
@@ -288,7 +294,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "enabled": opt.use_lfdb,
             "weight": opt.lfdb_weight,
             "num_classes": num_classes,
-            "snr_classes": len(opt.snr_levels) if method_name == "NEW3" else 3,
+            "snr_classes": len(opt.snr_levels) if is_joint_interference_method(method_name) else 3,
             "fading_classes": 3,
             "con_weight": opt.con_weight,
             "inv_weight": opt.inv_weight,
@@ -347,6 +353,8 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
     method_name = opt.method_name.strip()
     if method_name.upper() == "NEW3":
         method_name = "NEW3"
+    if method_name.lower() in {"robustsei", "robust_sei"}:
+        method_name = "RobustSEI"
     classifier_aliases = {
         "dl": "Linear",
         "linear": "Linear",
@@ -428,7 +436,7 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
         "lfdb": {
             "enabled": opt.use_lfdb_features,
             "num_classes": dataset_path_dict[opt.dataset]["pt_class"],
-            "snr_classes": 7 if method_name == "NEW3" else 3,
+            "snr_classes": 7 if is_joint_interference_method(method_name) else 3,
             "fading_classes": 3,
         },
         "classifier": {

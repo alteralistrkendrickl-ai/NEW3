@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from models.lfdb import LightweightLFDB
 from utils.channel_aug import add_random_awgn, random_channel_view, random_joint_interference_view
-from utils.config import pretrain_config
+from utils.config import is_joint_interference_method, pretrain_config
 from utils.get_dataset import get_pretrain_dataloader
 from utils.utils import (
     ListApply,
@@ -81,7 +81,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
         nonlocal channel_outputs
         if channel_outputs is not None:
             return channel_outputs
-        if config.get("method_name") == "NEW3":
+        if is_joint_interference_method(config.get("method_name")):
             view_1, snr_1, fading_1 = random_joint_interference_view(
                 mixed_inputs,
                 config["augmentation"].get("snr_levels"),
@@ -146,7 +146,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 cls(snr_logits, channel["snr"]) + cls(fading_logits, channel["fading"])
             )
 
-        elif loss_name == "mask" and config.get("method_name") == "NEW3":
+        elif loss_name == "mask" and is_joint_interference_method(config.get("method_name")):
             channel = get_channel_outputs()
             mask_mean = torch.cat([
                 channel["out_1"]["mask"],
@@ -340,11 +340,13 @@ def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
         if sum(losses[:-1]) < sum(best_record["loss"][:-1]):
             best_record = {"epoch": epoch, "metrics": metrics, "loss": losses}
             torch.save(encoder.state_dict(), os.path.join(config["exp_path"], "best_encoder.pth"))
+            torch.save(mixed_classifier.state_dict(), os.path.join(config["exp_path"], "best_id_classifier.pth"))
             if lfdb is not None:
                 torch.save(lfdb.state_dict(), os.path.join(config["exp_path"], "best_lfdb.pth"))
             logger.info(f"==> Best encoder saved at epoch {epoch + 1}.")
 
         torch.save(encoder.state_dict(), os.path.join(config["exp_path"], "final_encoder.pth"))
+        torch.save(mixed_classifier.state_dict(), os.path.join(config["exp_path"], "final_id_classifier.pth"))
         if lfdb is not None:
             torch.save(lfdb.state_dict(), os.path.join(config["exp_path"], "final_lfdb.pth"))
         if epoch % config["save_freq"] == 0 or epoch == config["epoch"] - 1:
@@ -360,7 +362,14 @@ def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
             .format(*record_time.step())
         )
 
-    for filename in ("best_encoder.pth", "final_encoder.pth", "best_lfdb.pth", "final_lfdb.pth"):
+    for filename in (
+        "best_encoder.pth",
+        "final_encoder.pth",
+        "best_id_classifier.pth",
+        "final_id_classifier.pth",
+        "best_lfdb.pth",
+        "final_lfdb.pth",
+    ):
         source = os.path.join(config["exp_path"], filename)
         if os.path.exists(source):
             shutil.copy2(source, os.path.join(config["save_path"], filename))
