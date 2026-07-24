@@ -118,7 +118,10 @@ def epoch_threshold_type(value):
 
 
 def is_joint_interference_method(method_name):
-    return method_name in {"NEW3", "RobustSEI"}
+    if method_name is None:
+        return False
+    method_name = str(method_name)
+    return method_name == "NEW3" or method_name.lower().startswith("robustsei")
 
 
 def TSLA_add_args(parser, seq_len=4800, patch_size=32, num_channels=2, emb_dim=256, depth=3, dropout_rate=0.3):

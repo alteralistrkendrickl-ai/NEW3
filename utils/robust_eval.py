@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from models.lfdb import LightweightLFDB
-from utils.config import PROJECT_ROOT, dataset_path_dict, model_path_dict
+from utils.config import PROJECT_ROOT, dataset_path_dict, is_joint_interference_method, model_path_dict
 from utils.get_dataset import (
     add_noise,
     default_normalize_fn,
@@ -68,7 +68,7 @@ def load_robust_models(args, device):
     lfdb = LightweightLFDB(
         feat_dim=args.feature_dim,
         num_classes=dataset_path_dict[args.dataset]["pt_class"],
-        snr_classes=len(args.snr_levels),
+        snr_classes=len(args.snr_levels) if is_joint_interference_method(args.method_name) else 3,
         fading_classes=3,
     ).to(device)
     lfdb.load_state_dict(torch.load(os.path.join(run_root, f"{args.checkpoint}_lfdb.pth"), map_location=device))
