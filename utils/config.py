@@ -180,7 +180,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     method_name="NEW3", inv_weight=0.2, int_weight=0.5, warmup_epochs=5,
                     snr_levels=None, stage2_epochs=20, mask_min=0.10, mask_max=0.40, mask_tv_weight=0.1,
                     fusion_mode="auto", rest_adv_weight=0.05, orth_weight=0.05, rest_uniform_weight=0.02,
-                    manual_local_loss=False, grad_clip=5.0):
+                    rest_probe_weight=0.1, manual_local_loss=False, grad_clip=5.0):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -228,6 +228,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--rest_adv_weight", type=float, default=rest_adv_weight)
     parser.add_argument("--orth_weight", type=float, default=orth_weight)
     parser.add_argument("--rest_uniform_weight", type=float, default=rest_uniform_weight)
+    parser.add_argument("--rest_probe_weight", type=float, default=rest_probe_weight)
     parser.add_argument("--manual_local_loss", action="store_true", default=manual_local_loss)
     parser.add_argument("--auto_local_loss", action="store_false", dest="manual_local_loss")
     parser.add_argument("--grad_clip", type=float, default=grad_clip)
@@ -259,6 +260,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         loss_item = ["id", "con", "adv", "mask"]
         if use_orthogonal_disentangle(method_name):
             loss_item.insert(1, "rest_uniform")
+            loss_item.insert(1, "rest_probe")
             loss_item.insert(1, "orth")
         if use_rest_adversary(method_name):
             loss_item.insert(1, "rest_adv")
@@ -365,6 +367,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "rest_adv_weight": opt.rest_adv_weight,
             "orth_weight": opt.orth_weight,
             "rest_uniform_weight": opt.rest_uniform_weight,
+            "rest_probe_weight": opt.rest_probe_weight,
             "use_rest_adv": use_rest_adversary(method_name),
             "use_orth": use_orthogonal_disentangle(method_name),
             "manual_local_loss": (

@@ -56,6 +56,8 @@ def _stage_weight(config, epoch, stage_name):
         return lfdb_conf.get("orth_weight", 0.0) if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
     if stage_name == "rest_uniform":
         return lfdb_conf.get("rest_uniform_weight", 0.0) if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
+    if stage_name == "rest_probe":
+        return lfdb_conf.get("rest_probe_weight", 0.0)
     if stage_name == "adv":
         start = lfdb_conf.get("warmup_epochs", 0) + lfdb_conf.get("stage2_epochs", 0)
         if epoch < start:
@@ -201,11 +203,23 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             )
             losses[loss_name] = _stage_weight(config, epoch, "orth") * orth_loss
 
+        elif loss_name == "rest_probe":
+            channel = get_channel_outputs()
+            rest_probe_logits = torch.cat([
+                channel["out_1"]["rest_probe_logits"],
+                channel["out_2"]["rest_probe_logits"],
+            ], dim=0)
+            losses[loss_name] = _stage_weight(config, epoch, "rest_probe") * cls(
+                rest_probe_logits, channel["device_labels"]
+            )
+
         elif loss_name == "rest_uniform":
             channel = get_channel_outputs()
+            rest_1 = channel["out_1"].get("rest_uniform_logits")
+            rest_2 = channel["out_2"].get("rest_uniform_logits")
             rest_logits = torch.cat([
-                channel["out_1"]["rest_id_logits"],
-                channel["out_2"]["rest_id_logits"],
+                rest_1 if rest_1 is not None else channel["out_1"]["rest_id_logits"],
+                rest_2 if rest_2 is not None else channel["out_2"]["rest_id_logits"],
             ], dim=0)
             losses[loss_name] = _stage_weight(config, epoch, "rest_uniform") * _uniform_prediction_loss(rest_logits)
 

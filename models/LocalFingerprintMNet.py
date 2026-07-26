@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models.lfdb import GradientReversal
 
@@ -87,6 +88,18 @@ class LocalFingerprintMNet(nn.Module):
             tv_loss = mask.new_tensor(0.0)
         return area_loss + self.tv_weight * tv_loss
 
+    def frozen_rest_head(self, features):
+        if self.rest_id_head is None:
+            return None
+        output = features
+        for module in self.rest_id_head:
+            if isinstance(module, nn.Linear):
+                bias = None if module.bias is None else module.bias.detach()
+                output = F.linear(output, module.weight.detach(), bias)
+            else:
+                output = module(output)
+        return output
+
     def forward(self, features, return_all=False):
         feature_map = self._ensure_map(features)
         mask = self.mnet(feature_map)
@@ -101,9 +114,14 @@ class LocalFingerprintMNet(nn.Module):
         adv_features = GradientReversal.apply(fingerprint, self.grl_alpha)
         env_logits = self.env_head(adv_features)
         rest_id_logits = None
+        rest_probe_logits = None
+        rest_uniform_logits = None
         if self.rest_id_head is not None:
             rest_features = GradientReversal.apply(rest, self.grl_alpha) if self.use_rest_adv else rest
             rest_id_logits = self.rest_id_head(rest_features)
+            if self.use_rest_probe:
+                rest_probe_logits = self.rest_id_head(rest.detach())
+                rest_uniform_logits = self.frozen_rest_head(rest)
         if not return_all:
             return fingerprint, mask, env_logits
         return {
@@ -116,5 +134,7 @@ class LocalFingerprintMNet(nn.Module):
             "id_logits": id_logits,
             "env_logits": env_logits,
             "rest_id_logits": rest_id_logits,
+            "rest_probe_logits": rest_probe_logits,
+            "rest_uniform_logits": rest_uniform_logits,
             "mask_loss": self.mask_regularization(mask),
         }
