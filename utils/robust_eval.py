@@ -6,6 +6,7 @@ from sklearn.metrics import accuracy_score, f1_score
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
+from models.LocalFingerprintMNet import LocalFingerprintMNet
 from models.lfdb import LightweightLFDB
 from utils.config import PROJECT_ROOT, dataset_path_dict, is_joint_interference_method, model_path_dict
 from utils.get_dataset import (
@@ -65,30 +66,41 @@ def load_robust_models(args, device):
     encoder = make_encoder(args, device)
     load_encoder_weights(encoder, os.path.join(run_root, f"{args.checkpoint}_encoder.pth"), device)
 
-    lfdb = LightweightLFDB(
-        feat_dim=args.feature_dim,
-        num_classes=dataset_path_dict[args.dataset]["pt_class"],
-        snr_classes=len(args.snr_levels) if is_joint_interference_method(args.method_name) else 3,
-        fading_classes=3,
-    ).to(device)
+    if is_joint_interference_method(args.method_name) and str(args.method_name).lower().startswith("robustsei"):
+        local_channels = args.TSLA_emb if "TSLA" in args.encoder else args.feature_dim
+        lfdb = LocalFingerprintMNet(
+            in_channels=local_channels,
+            num_classes=dataset_path_dict[args.dataset]["pt_class"],
+            env_classes=len(args.snr_levels) * 3,
+            mask_min=getattr(args, "mask_min", 0.10),
+            mask_max=getattr(args, "mask_max", 0.40),
+            tv_weight=getattr(args, "mask_tv_weight", 0.1),
+        ).to(device)
+        classifier = None
+    else:
+        lfdb = LightweightLFDB(
+            feat_dim=args.feature_dim,
+            num_classes=dataset_path_dict[args.dataset]["pt_class"],
+            snr_classes=len(args.snr_levels) if is_joint_interference_method(args.method_name) else 3,
+            fading_classes=3,
+        ).to(device)
+        classifier = create_model(
+            model_path_dict["LinearClassifier"],
+            in_dim=args.feature_dim,
+            num_classes=dataset_path_dict[args.dataset]["pt_class"],
+        ).to(device)
+        classifier_path = os.path.join(run_root, f"{args.checkpoint}_id_classifier.pth")
+        if not os.path.isfile(classifier_path):
+            raise FileNotFoundError(
+                f"Device classifier not found: {classifier_path}. "
+                "Run train_robust_sei.py with the updated code first."
+            )
+        classifier.load_state_dict(torch.load(classifier_path, map_location=device))
+        classifier.eval()
     lfdb.load_state_dict(torch.load(os.path.join(run_root, f"{args.checkpoint}_lfdb.pth"), map_location=device))
-
-    classifier = create_model(
-        model_path_dict["LinearClassifier"],
-        in_dim=args.feature_dim,
-        num_classes=dataset_path_dict[args.dataset]["pt_class"],
-    ).to(device)
-    classifier_path = os.path.join(run_root, f"{args.checkpoint}_id_classifier.pth")
-    if not os.path.isfile(classifier_path):
-        raise FileNotFoundError(
-            f"Device classifier not found: {classifier_path}. "
-            "Run train_robust_sei.py with the updated code first."
-        )
-    classifier.load_state_dict(torch.load(classifier_path, map_location=device))
 
     encoder.eval()
     lfdb.eval()
-    classifier.eval()
     return encoder, lfdb, classifier, run_root
 
 
@@ -108,9 +120,9 @@ def evaluate_loader(encoder, lfdb, classifier, loader, device, desc="Evaluating"
     with torch.no_grad():
         for inputs, targets in tqdm(loader, desc=desc):
             inputs = inputs.to(device)
-            features = encoder(inputs)
-            fingerprint, _, _ = lfdb(features)
-            logits = classifier(fingerprint)
+            features = encoder.forward_map(inputs) if hasattr(encoder, "forward_map") and classifier is None else encoder(inputs)
+            outputs = lfdb(features, return_all=True)
+            logits = outputs["id_logits"] if classifier is None else classifier(outputs["fingerprint"])
             predictions.append(torch.argmax(logits, dim=1).cpu().numpy())
             labels.append(targets.numpy())
     predictions = np.concatenate(predictions)

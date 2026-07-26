@@ -9,9 +9,10 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 
+from models.LocalFingerprintMNet import LocalFingerprintMNet
 from models.lfdb import LightweightLFDB
 from utils.channel_aug import add_random_awgn, random_channel_view, random_joint_interference_view
-from utils.config import is_joint_interference_method, pretrain_config
+from utils.config import is_joint_interference_method, is_local_fingerprint_method, pretrain_config
 from utils.get_dataset import get_pretrain_dataloader
 from utils.utils import (
     ListApply,
@@ -29,6 +30,12 @@ def _forward_features(encoder, inputs, labels=None, mix_lambda=None):
     return encoder(inputs, labels, mix_lambda)
 
 
+def _forward_feature_map(encoder, inputs):
+    if hasattr(encoder, "forward_map"):
+        return encoder.forward_map(inputs)
+    return encoder(inputs)
+
+
 def _ramp_weight(config, epoch, weight_name):
     base_weight = config["lfdb"][weight_name]
     warmup_epochs = config["lfdb"].get("warmup_epochs", 0)
@@ -39,6 +46,21 @@ def _ramp_weight(config, epoch, weight_name):
     progress = (epoch + 1 - warmup_epochs) / max(config["epoch"] - warmup_epochs, 1)
     ramp = 2.0 / (1.0 + exp(-10.0 * max(0.0, min(1.0, progress)))) - 1.0
     return base_weight * ramp
+
+
+def _stage_weight(config, epoch, stage_name):
+    lfdb_conf = config["lfdb"]
+    if stage_name == "con":
+        return lfdb_conf["con_weight"] if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
+    if stage_name == "adv":
+        start = lfdb_conf.get("warmup_epochs", 0) + lfdb_conf.get("stage2_epochs", 0)
+        if epoch < start:
+            return 0.0
+        remaining = max(config["epoch"] - start, 1)
+        progress = (epoch + 1 - start) / remaining
+        ramp = 2.0 / (1.0 + exp(-10.0 * max(0.0, min(1.0, progress)))) - 1.0
+        return lfdb_conf["adv_weight"] * ramp
+    raise ValueError(f"Unknown staged loss: {stage_name}")
 
 
 def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
@@ -61,6 +83,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
     channel_outputs = None
     losses = {}
     metrics = {"rot_acc": 0.0, "sei_acc": 0.0, "mixed_acc": 0.0}
+    local_method = is_local_fingerprint_method(config.get("method_name"))
 
     def get_base_features():
         nonlocal base_features
@@ -101,13 +124,20 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 mixed_inputs, config["augmentation"]["awgn_snr_range"],
                 enable_awgn=config["augmentation"]["awgn_enable"]
             )
-        out_1 = lfdb(_forward_features(encoder, view_1), return_all=True)
-        out_2 = lfdb(_forward_features(encoder, view_2), return_all=True)
+        if local_method:
+            out_1 = lfdb(_forward_feature_map(encoder, view_1), return_all=True)
+            out_2 = lfdb(_forward_feature_map(encoder, view_2), return_all=True)
+        else:
+            out_1 = lfdb(_forward_features(encoder, view_1), return_all=True)
+            out_2 = lfdb(_forward_features(encoder, view_2), return_all=True)
+        env_1 = fading_1.long() * int(config["lfdb"]["snr_classes"]) + snr_1.long()
+        env_2 = fading_2.long() * int(config["lfdb"]["snr_classes"]) + snr_2.long()
         channel_outputs = {
             "out_1": out_1,
             "out_2": out_2,
             "snr": torch.cat([snr_1, snr_2]).long(),
             "fading": torch.cat([fading_1, fading_2]).long(),
+            "env": torch.cat([env_1, env_2]).long(),
             "device_labels": torch.cat([device_labels, device_labels]).long(),
         }
         return channel_outputs
@@ -115,11 +145,17 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
     for loss_name in config["mtl"]["item"]:
         if loss_name == "id":
             channel = get_channel_outputs()
-            fingerprints = torch.cat([
-                channel["out_1"]["fingerprint"],
-                channel["out_2"]["fingerprint"],
-            ], dim=0)
-            predictions = mixed_classifier(fingerprints)
+            if local_method:
+                predictions = torch.cat([
+                    channel["out_1"]["id_logits"],
+                    channel["out_2"]["id_logits"],
+                ], dim=0)
+            else:
+                fingerprints = torch.cat([
+                    channel["out_1"]["fingerprint"],
+                    channel["out_2"]["fingerprint"],
+                ], dim=0)
+                predictions = mixed_classifier(fingerprints)
             losses[loss_name] = cls(predictions, channel["device_labels"])
             metrics["sei_acc"] = accuracy(predictions, channel["device_labels"])
 
@@ -146,7 +182,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 cls(snr_logits, channel["snr"]) + cls(fading_logits, channel["fading"])
             )
 
-        elif loss_name == "mask" and is_joint_interference_method(config.get("method_name")):
+        elif loss_name == "mask" and is_joint_interference_method(config.get("method_name")) and not local_method:
             channel = get_channel_outputs()
             mask_mean = torch.cat([
                 channel["out_1"]["mask"],
@@ -186,17 +222,27 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 channel["out_2"]["fingerprint"],
                 dim=1,
             ).mean()
-            losses[loss_name] = _ramp_weight(config, epoch, "con_weight") * con_loss
+            weight = _stage_weight(config, epoch, "con") if local_method else _ramp_weight(config, epoch, "con_weight")
+            losses[loss_name] = weight * con_loss
 
         elif loss_name == "adv":
             channel = get_channel_outputs()
-            adv_logits = torch.cat([
-                channel["out_1"]["adv_logits"],
-                channel["out_2"]["adv_logits"],
-            ], dim=0)
-            losses[loss_name] = _ramp_weight(config, epoch, "adv_weight") * cls(
-                adv_logits, channel["device_labels"]
-            )
+            if local_method:
+                adv_logits = torch.cat([
+                    channel["out_1"]["env_logits"],
+                    channel["out_2"]["env_logits"],
+                ], dim=0)
+                losses[loss_name] = _stage_weight(config, epoch, "adv") * cls(
+                    adv_logits, channel["env"]
+                )
+            else:
+                adv_logits = torch.cat([
+                    channel["out_1"]["adv_logits"],
+                    channel["out_2"]["adv_logits"],
+                ], dim=0)
+                losses[loss_name] = _ramp_weight(config, epoch, "adv_weight") * cls(
+                    adv_logits, channel["device_labels"]
+                )
 
         elif loss_name == "ch":
             channel = get_channel_outputs()
@@ -213,10 +259,17 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             )
 
         elif loss_name == "mask":
-            get_fingerprint_features()
-            mask_mean = lfdb_outputs["mask"].mean()
-            target = mask_mean.new_tensor(config["lfdb"]["mask_ratio"])
-            losses[loss_name] = config["lfdb"]["mask_weight"] * torch.abs(mask_mean - target)
+            if local_method:
+                channel = get_channel_outputs()
+                mask_loss = 0.5 * (
+                    channel["out_1"]["mask_loss"] + channel["out_2"]["mask_loss"]
+                )
+                losses[loss_name] = config["lfdb"]["mask_weight"] * mask_loss
+            else:
+                get_fingerprint_features()
+                mask_mean = lfdb_outputs["mask"].mean()
+                target = mask_mean.new_tensor(config["lfdb"]["mask_ratio"])
+                losses[loss_name] = config["lfdb"]["mask_weight"] * torch.abs(mask_mean - target)
         else:
             raise ValueError(f"Unknown pretext loss: {loss_name}")
 
@@ -412,12 +465,27 @@ def pretext(config=None):
 
     lfdb = None
     if config["lfdb"]["enabled"]:
-        lfdb = LightweightLFDB(
-            feat_dim=config["encoder"]["feature_dim"],
-            num_classes=config["lfdb"]["num_classes"],
-            snr_classes=config["lfdb"]["snr_classes"],
-            fading_classes=config["lfdb"]["fading_classes"],
-        ).to(device)
+        if is_local_fingerprint_method(config.get("method_name")):
+            local_channels = (
+                config["encoder"]["TSLA_config"]["emb_dim"]
+                if "TSLA" in config["encoder"]["name"]
+                else config["encoder"]["feature_dim"]
+            )
+            lfdb = LocalFingerprintMNet(
+                in_channels=local_channels,
+                num_classes=config["lfdb"]["num_classes"],
+                env_classes=config["lfdb"]["snr_classes"] * config["lfdb"]["fading_classes"],
+                mask_min=config["lfdb"]["mask_min"],
+                mask_max=config["lfdb"]["mask_max"],
+                tv_weight=config["lfdb"]["mask_tv_weight"],
+            ).to(device)
+        else:
+            lfdb = LightweightLFDB(
+                feat_dim=config["encoder"]["feature_dim"],
+                num_classes=config["lfdb"]["num_classes"],
+                snr_classes=config["lfdb"]["snr_classes"],
+                fading_classes=config["lfdb"]["fading_classes"],
+            ).to(device)
 
     cls = torch.nn.CrossEntropyLoss()
     mml = create_model(config["mml"]["root"], beta=config["mml"]["beta"])

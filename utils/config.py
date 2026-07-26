@@ -86,6 +86,7 @@ model_path_dict = {
     "MTL": os.path.join(PROJECT_ROOT, "models", "AutomaticWeightedLoss.py"),
     "Rotator": os.path.join(PROJECT_ROOT, "models", "Rotator.py")
 }
+model_path_dict["LocalFingerprintMNet"] = os.path.join(PROJECT_ROOT, "models", "LocalFingerprintMNet.py")
 
 
 def _validate_choice(value, choices, name):
@@ -124,6 +125,12 @@ def is_joint_interference_method(method_name):
     return method_name == "NEW3" or method_name.lower().startswith("robustsei")
 
 
+def is_local_fingerprint_method(method_name):
+    if method_name is None:
+        return False
+    return str(method_name).lower().startswith("robustsei")
+
+
 def TSLA_add_args(parser, seq_len=4800, patch_size=32, num_channels=2, emb_dim=256, depth=3, dropout_rate=0.3):
     parser.add_argument("--TSLA_len", type=int, default=seq_len)
     parser.add_argument("--TSLA_patch", type=int, default=patch_size)
@@ -151,7 +158,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     resume="", use_lfdb=True, lfdb_weight=1.0, awgn_enable=True, awgn_min=0.0, awgn_max=30.0,
                     con_weight=1.0, adv_weight=0.2, ch_weight=1.0, mask_weight=0.05, mask_ratio=0.5,
                     method_name="NEW3", inv_weight=0.2, int_weight=0.5, warmup_epochs=5,
-                    snr_levels=None):
+                    snr_levels=None, stage2_epochs=20, mask_min=0.10, mask_max=0.40, mask_tv_weight=0.1):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -191,6 +198,10 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--mask_weight", type=float, default=mask_weight)
     parser.add_argument("--mask_ratio", type=float, default=mask_ratio)
     parser.add_argument("--warmup_epochs", type=int, default=warmup_epochs)
+    parser.add_argument("--stage2_epochs", type=int, default=stage2_epochs)
+    parser.add_argument("--mask_min", type=float, default=mask_min)
+    parser.add_argument("--mask_max", type=float, default=mask_max)
+    parser.add_argument("--mask_tv_weight", type=float, default=mask_tv_weight)
     parser.add_argument("--snr_levels", type=float, nargs="+", default=snr_levels or [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0])
     explicit_tsla_conf = tsla_conf is not None
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
@@ -198,7 +209,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if opt.classifiar.lower() == "linear":
         opt.classifiar = "Linear"
 
-    encoder_choices = {k for k in model_path_dict if not k.endswith("Classifier") and k not in {"NCE", "MML", "MTL", "Rotator"}}
+    encoder_choices = {k for k in model_path_dict if not k.endswith("Classifier") and k not in {"NCE", "MML", "MTL", "Rotator", "LocalFingerprintMNet"}}
     _validate_choice(opt.encoder, encoder_choices, "encoder")
     _validate_choice(opt.classifiar, {"Linear"}, "classifier")
     _validate_choice(opt.dataset, dataset_path_dict, "dataset")
@@ -215,7 +226,12 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    loss_item = ["id", "inv", "adv", "int", "mask"] if is_joint_interference_method(method_name) and opt.use_lfdb else ["rot_cls", "sei_cls", "mml"]
+    if is_local_fingerprint_method(method_name) and opt.use_lfdb:
+        loss_item = ["id", "con", "adv", "mask"]
+    elif is_joint_interference_method(method_name) and opt.use_lfdb:
+        loss_item = ["id", "inv", "adv", "int", "mask"]
+    else:
+        loss_item = ["rot_cls", "sei_cls", "mml"]
     if opt.use_lfdb and not is_joint_interference_method(method_name):
         loss_item.extend(["con", "adv", "ch", "mask"])
     ablate_item = ([opt.ablate] if not isinstance(opt.ablate, list) else opt.ablate) if opt.ablate else []
@@ -307,6 +323,10 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "mask_weight": opt.mask_weight,
             "mask_ratio": opt.mask_ratio,
             "warmup_epochs": opt.warmup_epochs,
+            "stage2_epochs": opt.stage2_epochs,
+            "mask_min": opt.mask_min,
+            "mask_max": opt.mask_max,
+            "mask_tv_weight": opt.mask_tv_weight,
         },
         "extra_info": opt.extra_info
     }
@@ -366,7 +386,7 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
         "svm": "svm",
     }
     opt.classifier = classifier_aliases.get(opt.classifier.lower(), opt.classifier)
-    encoder_choices = {k for k in model_path_dict if not k.endswith("Classifier") and k not in {"NCE", "MML", "MTL", "Rotator"}}
+    encoder_choices = {k for k in model_path_dict if not k.endswith("Classifier") and k not in {"NCE", "MML", "MTL", "Rotator", "LocalFingerprintMNet"}}
     _validate_choice(opt.encoder, encoder_choices, "encoder")
     _validate_choice(opt.classifier.lower(), {"linear", "lr", "knn", "svm"}, "classifier")
     _validate_choice(opt.dataset, dataset_path_dict, "dataset")

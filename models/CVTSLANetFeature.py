@@ -253,14 +253,18 @@ class TSLANet(nn.Module):
         return mixed_x, y_a, y_b
 
     def _set_forward(self, x):
+        x = self.forward_map(x).transpose(1, 2)
+        x = x.mean(1)
+        x = self.head(x)
+        return x
+
+    def forward_map(self, x):
         x = self.patch_embed(x)
         x = x + self.pos_embed
         x = self.pos_drop(x)
         for tsla_blk in self.tsla_blocks:
             x = tsla_blk(x)
-        x = x.mean(1)
-        x = self.head(x)
-        return x
+        return x.transpose(1, 2)
 
     def _set_forward_by_mixed_data(self, x, y, mixed_lambda):
         mixup_layer = torch.randint(0, self.depth + 1, (1,)).item()

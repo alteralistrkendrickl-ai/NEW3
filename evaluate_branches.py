@@ -11,25 +11,29 @@ from utils.robust_eval import load_eval_loader, load_robust_models
 
 
 def collect_branch_features(encoder, lfdb, loader, device):
-    raw_features = []
+    avg_features = []
     fingerprint_features = []
-    interference_features = []
+    rest_features = []
     labels = []
     encoder.eval()
     lfdb.eval()
     with torch.no_grad():
         for inputs, targets in tqdm(loader, desc="Collecting branch features"):
             inputs = inputs.to(device)
-            features = encoder(inputs)
+            features = encoder.forward_map(inputs) if hasattr(encoder, "forward_map") else encoder(inputs)
             outputs = lfdb(features, return_all=True)
-            raw_features.append(features.cpu().numpy())
+            feature_map = outputs.get("feature_map")
+            mask = outputs["mask"]
+            avg = feature_map.mean(dim=-1) if feature_map is not None else features
+            rest = ((1.0 - mask) * feature_map).sum(dim=-1) / (1.0 - mask).sum(dim=-1).clamp_min(1e-6)
+            avg_features.append(avg.cpu().numpy())
             fingerprint_features.append(outputs["fingerprint"].cpu().numpy())
-            interference_features.append(outputs["nuisance"].cpu().numpy())
+            rest_features.append(rest.cpu().numpy())
             labels.append(targets.numpy())
     return {
-        "h": np.concatenate(raw_features),
+        "h_avg": np.concatenate(avg_features),
         "z_fp": np.concatenate(fingerprint_features),
-        "z_int": np.concatenate(interference_features),
+        "z_rest": np.concatenate(rest_features),
         "y": np.concatenate(labels),
     }
 
@@ -57,7 +61,7 @@ if __name__ == "__main__":
     test = collect_branch_features(encoder, lfdb, test_loader, device)
 
     results = {}
-    for branch in ("h", "z_fp", "z_int"):
+    for branch in ("h_avg", "z_fp", "z_rest"):
         results[branch] = fit_and_eval(train[branch], train["y"], test[branch], test["y"])
         print(
             f"{branch}: Acc={results[branch]['acc']:.2f}%, "
