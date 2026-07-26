@@ -138,6 +138,12 @@ def local_fusion_mode(method_name, fusion_mode="auto"):
     return "concat" if "fusion" in method_name else "fingerprint"
 
 
+def use_rest_adversary(method_name):
+    if method_name is None:
+        return False
+    return "restadv" in str(method_name).lower()
+
+
 def TSLA_add_args(parser, seq_len=4800, patch_size=32, num_channels=2, emb_dim=256, depth=3, dropout_rate=0.3):
     parser.add_argument("--TSLA_len", type=int, default=seq_len)
     parser.add_argument("--TSLA_patch", type=int, default=patch_size)
@@ -166,7 +172,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     con_weight=1.0, adv_weight=0.2, ch_weight=1.0, mask_weight=0.05, mask_ratio=0.5,
                     method_name="NEW3", inv_weight=0.2, int_weight=0.5, warmup_epochs=5,
                     snr_levels=None, stage2_epochs=20, mask_min=0.10, mask_max=0.40, mask_tv_weight=0.1,
-                    fusion_mode="auto"):
+                    fusion_mode="auto", rest_adv_weight=0.05):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -211,6 +217,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--mask_max", type=float, default=mask_max)
     parser.add_argument("--mask_tv_weight", type=float, default=mask_tv_weight)
     parser.add_argument("--fusion_mode", choices=["auto", "fingerprint", "concat"], default=fusion_mode)
+    parser.add_argument("--rest_adv_weight", type=float, default=rest_adv_weight)
     parser.add_argument("--snr_levels", type=float, nargs="+", default=snr_levels or [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0])
     explicit_tsla_conf = tsla_conf is not None
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
@@ -237,6 +244,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     tsla_conf = TSLA_parse_args(opt)
     if is_local_fingerprint_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "con", "adv", "mask"]
+        if use_rest_adversary(method_name):
+            loss_item.insert(1, "rest_adv")
     elif is_joint_interference_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "inv", "adv", "int", "mask"]
     else:
@@ -337,6 +346,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "mask_max": opt.mask_max,
             "mask_tv_weight": opt.mask_tv_weight,
             "fusion_mode": local_fusion_mode(method_name, opt.fusion_mode),
+            "rest_adv_weight": opt.rest_adv_weight,
+            "use_rest_adv": use_rest_adversary(method_name),
         },
         "extra_info": opt.extra_info
     }

@@ -18,6 +18,7 @@ class LocalFingerprintMNet(nn.Module):
         mask_max=0.40,
         tv_weight=0.1,
         fusion_mode="fingerprint",
+        use_rest_adv=False,
     ):
         super().__init__()
         if fusion_mode not in {"fingerprint", "concat"}:
@@ -27,6 +28,7 @@ class LocalFingerprintMNet(nn.Module):
         self.mask_max = mask_max
         self.tv_weight = tv_weight
         self.fusion_mode = fusion_mode
+        self.use_rest_adv = use_rest_adv
         id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
         self.mnet = nn.Sequential(
@@ -47,6 +49,14 @@ class LocalFingerprintMNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_channels, env_classes),
         )
+        if use_rest_adv:
+            self.rest_id_head = nn.Sequential(
+                nn.Linear(in_channels, hidden_channels),
+                nn.ReLU(inplace=True),
+                nn.Linear(hidden_channels, num_classes),
+            )
+        else:
+            self.rest_id_head = None
 
     @staticmethod
     def _ensure_map(features):
@@ -59,6 +69,11 @@ class LocalFingerprintMNet(nn.Module):
     def weighted_pool(self, feature_map, mask):
         weighted = feature_map * mask
         return weighted.sum(dim=-1) / mask.sum(dim=-1).clamp_min(1e-6)
+
+    def rest_pool(self, feature_map, mask):
+        rest_mask = 1.0 - mask
+        weighted = feature_map * rest_mask
+        return weighted.sum(dim=-1) / rest_mask.sum(dim=-1).clamp_min(1e-6)
 
     def mask_regularization(self, mask):
         mean_mask = mask.mean()
@@ -75,6 +90,7 @@ class LocalFingerprintMNet(nn.Module):
         mask = self.mnet(feature_map)
         h_avg = feature_map.mean(dim=-1)
         fingerprint = self.weighted_pool(feature_map, mask)
+        rest = self.rest_pool(feature_map, mask)
         if self.fusion_mode == "concat":
             id_features = torch.cat([h_avg, fingerprint], dim=1)
         else:
@@ -82,15 +98,21 @@ class LocalFingerprintMNet(nn.Module):
         id_logits = self.id_head(id_features)
         adv_features = GradientReversal.apply(fingerprint, self.grl_alpha)
         env_logits = self.env_head(adv_features)
+        rest_id_logits = None
+        if self.rest_id_head is not None:
+            rest_adv_features = GradientReversal.apply(rest, self.grl_alpha)
+            rest_id_logits = self.rest_id_head(rest_adv_features)
         if not return_all:
             return fingerprint, mask, env_logits
         return {
             "feature_map": feature_map,
             "h_avg": h_avg,
             "fingerprint": fingerprint,
+            "z_rest": rest,
             "id_features": id_features,
             "mask": mask,
             "id_logits": id_logits,
             "env_logits": env_logits,
+            "rest_id_logits": rest_id_logits,
             "mask_loss": self.mask_regularization(mask),
         }

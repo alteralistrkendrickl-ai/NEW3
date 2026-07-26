@@ -8,7 +8,14 @@ from tqdm import tqdm
 
 from models.LocalFingerprintMNet import LocalFingerprintMNet
 from models.lfdb import LightweightLFDB
-from utils.config import PROJECT_ROOT, dataset_path_dict, is_joint_interference_method, local_fusion_mode, model_path_dict
+from utils.config import (
+    PROJECT_ROOT,
+    dataset_path_dict,
+    is_joint_interference_method,
+    local_fusion_mode,
+    model_path_dict,
+    use_rest_adversary,
+)
 from utils.get_dataset import (
     add_noise,
     default_normalize_fn,
@@ -76,6 +83,7 @@ def load_robust_models(args, device):
             mask_max=getattr(args, "mask_max", 0.40),
             tv_weight=getattr(args, "mask_tv_weight", 0.1),
             fusion_mode=local_fusion_mode(args.method_name, getattr(args, "fusion_mode", "auto")),
+            use_rest_adv=use_rest_adversary(args.method_name),
         ).to(device)
         classifier = None
     else:

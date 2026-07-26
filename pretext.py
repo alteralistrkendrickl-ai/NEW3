@@ -60,6 +60,10 @@ def _stage_weight(config, epoch, stage_name):
         progress = (epoch + 1 - start) / remaining
         ramp = 2.0 / (1.0 + exp(-10.0 * max(0.0, min(1.0, progress)))) - 1.0
         return lfdb_conf["adv_weight"] * ramp
+    if stage_name == "rest_adv":
+        if epoch < lfdb_conf.get("warmup_epochs", 0):
+            return 0.0
+        return lfdb_conf.get("rest_adv_weight", 0.0)
     raise ValueError(f"Unknown staged loss: {stage_name}")
 
 
@@ -158,6 +162,16 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 predictions = mixed_classifier(fingerprints)
             losses[loss_name] = cls(predictions, channel["device_labels"])
             metrics["sei_acc"] = accuracy(predictions, channel["device_labels"])
+
+        elif loss_name == "rest_adv":
+            channel = get_channel_outputs()
+            rest_logits = torch.cat([
+                channel["out_1"]["rest_id_logits"],
+                channel["out_2"]["rest_id_logits"],
+            ], dim=0)
+            losses[loss_name] = _stage_weight(config, epoch, "rest_adv") * cls(
+                rest_logits, channel["device_labels"]
+            )
 
         elif loss_name == "inv":
             channel = get_channel_outputs()
@@ -479,6 +493,7 @@ def pretext(config=None):
                 mask_max=config["lfdb"]["mask_max"],
                 tv_weight=config["lfdb"]["mask_tv_weight"],
                 fusion_mode=config["lfdb"].get("fusion_mode", "fingerprint"),
+                use_rest_adv=config["lfdb"].get("use_rest_adv", False),
             ).to(device)
         else:
             lfdb = LightweightLFDB(

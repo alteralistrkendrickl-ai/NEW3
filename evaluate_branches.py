@@ -26,7 +26,9 @@ def collect_branch_features(encoder, lfdb, loader, device):
             feature_map = outputs.get("feature_map")
             mask = outputs["mask"]
             avg = feature_map.mean(dim=-1) if feature_map is not None else features
-            rest = ((1.0 - mask) * feature_map).sum(dim=-1) / (1.0 - mask).sum(dim=-1).clamp_min(1e-6)
+            rest = outputs.get("z_rest")
+            if rest is None:
+                rest = ((1.0 - mask) * feature_map).sum(dim=-1) / (1.0 - mask).sum(dim=-1).clamp_min(1e-6)
             avg_features.append(avg.cpu().numpy())
             fingerprint_features.append(outputs["fingerprint"].cpu().numpy())
             fused_features.append(outputs.get("id_features", outputs["fingerprint"]).cpu().numpy())
