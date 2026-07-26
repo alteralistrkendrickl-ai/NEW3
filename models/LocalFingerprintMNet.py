@@ -17,12 +17,17 @@ class LocalFingerprintMNet(nn.Module):
         mask_min=0.10,
         mask_max=0.40,
         tv_weight=0.1,
+        fusion_mode="fingerprint",
     ):
         super().__init__()
+        if fusion_mode not in {"fingerprint", "concat"}:
+            raise ValueError("fusion_mode must be 'fingerprint' or 'concat'.")
         self.grl_alpha = grl_alpha
         self.mask_min = mask_min
         self.mask_max = mask_max
         self.tv_weight = tv_weight
+        self.fusion_mode = fusion_mode
+        id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
         self.mnet = nn.Sequential(
             nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1),
@@ -35,7 +40,7 @@ class LocalFingerprintMNet(nn.Module):
         )
         self.id_head = nn.Sequential(
             nn.Dropout(0.3),
-            nn.Linear(in_channels, num_classes),
+            nn.Linear(id_dim, num_classes),
         )
         self.env_head = nn.Sequential(
             nn.Linear(in_channels, hidden_channels),
@@ -68,15 +73,22 @@ class LocalFingerprintMNet(nn.Module):
     def forward(self, features, return_all=False):
         feature_map = self._ensure_map(features)
         mask = self.mnet(feature_map)
+        h_avg = feature_map.mean(dim=-1)
         fingerprint = self.weighted_pool(feature_map, mask)
-        id_logits = self.id_head(fingerprint)
+        if self.fusion_mode == "concat":
+            id_features = torch.cat([h_avg, fingerprint], dim=1)
+        else:
+            id_features = fingerprint
+        id_logits = self.id_head(id_features)
         adv_features = GradientReversal.apply(fingerprint, self.grl_alpha)
         env_logits = self.env_head(adv_features)
         if not return_all:
             return fingerprint, mask, env_logits
         return {
             "feature_map": feature_map,
+            "h_avg": h_avg,
             "fingerprint": fingerprint,
+            "id_features": id_features,
             "mask": mask,
             "id_logits": id_logits,
             "env_logits": env_logits,

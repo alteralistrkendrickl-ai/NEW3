@@ -478,6 +478,7 @@ def pretext(config=None):
                 mask_min=config["lfdb"]["mask_min"],
                 mask_max=config["lfdb"]["mask_max"],
                 tv_weight=config["lfdb"]["mask_tv_weight"],
+                fusion_mode=config["lfdb"].get("fusion_mode", "fingerprint"),
             ).to(device)
         else:
             lfdb = LightweightLFDB(

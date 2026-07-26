@@ -13,6 +13,7 @@ from utils.robust_eval import load_eval_loader, load_robust_models
 def collect_branch_features(encoder, lfdb, loader, device):
     avg_features = []
     fingerprint_features = []
+    fused_features = []
     rest_features = []
     labels = []
     encoder.eval()
@@ -28,11 +29,13 @@ def collect_branch_features(encoder, lfdb, loader, device):
             rest = ((1.0 - mask) * feature_map).sum(dim=-1) / (1.0 - mask).sum(dim=-1).clamp_min(1e-6)
             avg_features.append(avg.cpu().numpy())
             fingerprint_features.append(outputs["fingerprint"].cpu().numpy())
+            fused_features.append(outputs.get("id_features", outputs["fingerprint"]).cpu().numpy())
             rest_features.append(rest.cpu().numpy())
             labels.append(targets.numpy())
     return {
         "h_avg": np.concatenate(avg_features),
         "z_fp": np.concatenate(fingerprint_features),
+        "z_fused": np.concatenate(fused_features),
         "z_rest": np.concatenate(rest_features),
         "y": np.concatenate(labels),
     }
@@ -50,7 +53,7 @@ def fit_and_eval(train_x, train_y, test_x, test_y):
 
 if __name__ == "__main__":
     parser = build_parser()
-    parser.description = "Evaluate device identity leakage in h, z_fp, and z_int branches."
+    parser.description = "Evaluate device identity leakage in h_avg, z_fp, z_fused, and z_rest branches."
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     encoder, lfdb, _, run_root = load_robust_models(args, device)
@@ -61,7 +64,7 @@ if __name__ == "__main__":
     test = collect_branch_features(encoder, lfdb, test_loader, device)
 
     results = {}
-    for branch in ("h_avg", "z_fp", "z_rest"):
+    for branch in ("h_avg", "z_fp", "z_fused", "z_rest"):
         results[branch] = fit_and_eval(train[branch], train["y"], test[branch], test["y"])
         print(
             f"{branch}: Acc={results[branch]['acc']:.2f}%, "
