@@ -21,6 +21,7 @@ class LocalFingerprintMNet(nn.Module):
         fusion_mode="fingerprint",
         use_rest_adv=False,
         use_rest_probe=False,
+        use_rest_projector=False,
     ):
         super().__init__()
         if fusion_mode not in {"fingerprint", "concat"}:
@@ -32,6 +33,7 @@ class LocalFingerprintMNet(nn.Module):
         self.fusion_mode = fusion_mode
         self.use_rest_adv = use_rest_adv
         self.use_rest_probe = use_rest_probe
+        self.use_rest_projector = use_rest_projector
         id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
         self.mnet = nn.Sequential(
@@ -52,6 +54,16 @@ class LocalFingerprintMNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_channels, env_classes),
         )
+        if use_rest_projector:
+            self.rest_projector = nn.Sequential(
+                nn.Linear(in_channels, hidden_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.2),
+                nn.Linear(hidden_channels, in_channels),
+                nn.LayerNorm(in_channels),
+            )
+        else:
+            self.rest_projector = nn.Identity()
         if use_rest_adv or use_rest_probe:
             self.rest_id_head = nn.Sequential(
                 nn.Linear(in_channels, hidden_channels),
@@ -105,7 +117,8 @@ class LocalFingerprintMNet(nn.Module):
         mask = self.mnet(feature_map)
         h_avg = feature_map.mean(dim=-1)
         fingerprint = self.weighted_pool(feature_map, mask)
-        rest = self.rest_pool(feature_map, mask)
+        rest_raw = self.rest_pool(feature_map, mask)
+        rest = self.rest_projector(rest_raw)
         if self.fusion_mode == "concat":
             id_features = torch.cat([h_avg, fingerprint], dim=1)
         else:
@@ -129,6 +142,7 @@ class LocalFingerprintMNet(nn.Module):
             "h_avg": h_avg,
             "fingerprint": fingerprint,
             "z_rest": rest,
+            "z_rest_raw": rest_raw,
             "id_features": id_features,
             "mask": mask,
             "id_logits": id_logits,

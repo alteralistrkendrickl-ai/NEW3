@@ -58,6 +58,8 @@ def _stage_weight(config, epoch, stage_name):
         return lfdb_conf.get("rest_uniform_weight", 0.0) if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
     if stage_name == "rest_probe":
         return lfdb_conf.get("rest_probe_weight", 0.0)
+    if stage_name == "res":
+        return lfdb_conf.get("rest_uniform_weight", 0.0) if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
     if stage_name == "adv":
         start = lfdb_conf.get("warmup_epochs", 0) + lfdb_conf.get("stage2_epochs", 0)
         if epoch < start:
@@ -201,7 +203,30 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             orth_loss = 0.5 * (
                 _orthogonal_loss(channel["out_1"]) + _orthogonal_loss(channel["out_2"])
             )
+            if config["lfdb"].get("is_cifd", False):
+                mask_loss = 0.5 * (
+                    channel["out_1"]["mask_loss"] + channel["out_2"]["mask_loss"]
+                )
+                orth_loss = orth_loss + config["lfdb"].get("mask_weight", 0.0) * mask_loss
             losses[loss_name] = _stage_weight(config, epoch, "orth") * orth_loss
+
+        elif loss_name == "res":
+            channel = get_channel_outputs()
+            rest_probe_logits = torch.cat([
+                channel["out_1"]["rest_probe_logits"],
+                channel["out_2"]["rest_probe_logits"],
+            ], dim=0)
+            rest_probe_loss = config["lfdb"].get("rest_probe_weight", 0.0) * cls(
+                rest_probe_logits, channel["device_labels"]
+            )
+            rest_1 = channel["out_1"].get("rest_uniform_logits")
+            rest_2 = channel["out_2"].get("rest_uniform_logits")
+            rest_uniform_logits = torch.cat([
+                rest_1 if rest_1 is not None else channel["out_1"]["rest_id_logits"],
+                rest_2 if rest_2 is not None else channel["out_2"]["rest_id_logits"],
+            ], dim=0)
+            rest_uniform_loss = _stage_weight(config, epoch, "res") * _uniform_prediction_loss(rest_uniform_logits)
+            losses[loss_name] = rest_probe_loss + rest_uniform_loss
 
         elif loss_name == "rest_probe":
             channel = get_channel_outputs()
@@ -553,6 +578,7 @@ def pretext(config=None):
                 fusion_mode=config["lfdb"].get("fusion_mode", "fingerprint"),
                 use_rest_adv=config["lfdb"].get("use_rest_adv", False),
                 use_rest_probe=config["lfdb"].get("use_orth", False),
+                use_rest_projector=config["lfdb"].get("use_rest_projector", False),
             ).to(device)
         else:
             lfdb = LightweightLFDB(

@@ -12,10 +12,12 @@ from utils.config import (
     PROJECT_ROOT,
     dataset_path_dict,
     is_joint_interference_method,
+    is_local_fingerprint_method,
     local_fusion_mode,
     model_path_dict,
     use_orthogonal_disentangle,
     use_rest_adversary,
+    use_rest_projector,
 )
 from utils.get_dataset import (
     add_noise,
@@ -74,7 +76,7 @@ def load_robust_models(args, device):
     encoder = make_encoder(args, device)
     load_encoder_weights(encoder, os.path.join(run_root, f"{args.checkpoint}_encoder.pth"), device)
 
-    if is_joint_interference_method(args.method_name) and str(args.method_name).lower().startswith("robustsei"):
+    if is_joint_interference_method(args.method_name) and is_local_fingerprint_method(args.method_name):
         local_channels = args.TSLA_emb if "TSLA" in args.encoder else args.feature_dim
         lfdb = LocalFingerprintMNet(
             in_channels=local_channels,
@@ -86,6 +88,7 @@ def load_robust_models(args, device):
             fusion_mode=local_fusion_mode(args.method_name, getattr(args, "fusion_mode", "auto")),
             use_rest_adv=use_rest_adversary(args.method_name),
             use_rest_probe=use_orthogonal_disentangle(args.method_name),
+            use_rest_projector=use_rest_projector(args.method_name),
         ).to(device)
         classifier = None
     else:

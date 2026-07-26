@@ -122,19 +122,29 @@ def is_joint_interference_method(method_name):
     if method_name is None:
         return False
     method_name = str(method_name)
-    return method_name == "NEW3" or method_name.lower().startswith("robustsei")
+    name = method_name.lower()
+    return method_name == "NEW3" or name.startswith("robustsei") or name.startswith("cifd")
 
 
 def is_local_fingerprint_method(method_name):
     if method_name is None:
         return False
-    return str(method_name).lower().startswith("robustsei")
+    name = str(method_name).lower()
+    return name.startswith("robustsei") or name.startswith("cifd")
+
+
+def is_cifd_method(method_name):
+    if method_name is None:
+        return False
+    return str(method_name).lower().startswith("cifd")
 
 
 def local_fusion_mode(method_name, fusion_mode="auto"):
     if fusion_mode != "auto":
         return fusion_mode
     method_name = "" if method_name is None else str(method_name).lower()
+    if method_name.startswith("cifd"):
+        return "fingerprint"
     return "concat" if "fusion" in method_name else "fingerprint"
 
 
@@ -148,7 +158,13 @@ def use_orthogonal_disentangle(method_name):
     if method_name is None:
         return False
     name = str(method_name).lower()
-    return "orth" in name or "disentangle" in name
+    return name.startswith("cifd") or "orth" in name or "disentangle" in name
+
+
+def use_rest_projector(method_name):
+    if method_name is None:
+        return False
+    return str(method_name).lower().startswith("cifd")
 
 
 def TSLA_add_args(parser, seq_len=4800, patch_size=32, num_channels=2, emb_dim=256, depth=3, dropout_rate=0.3):
@@ -253,10 +269,14 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         method_name = "NEW3"
     if method_name.lower() in {"robustsei", "robust_sei"}:
         method_name = "RobustSEI"
+    if method_name.lower() in {"cifd", "cifd_sei", "cifd-sei"}:
+        method_name = "CIFD_SEI"
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if is_local_fingerprint_method(method_name) and opt.use_lfdb:
+    if is_cifd_method(method_name) and opt.use_lfdb:
+        loss_item = ["id", "inv", "orth", "res"]
+    elif is_local_fingerprint_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "con", "adv", "mask"]
         if use_orthogonal_disentangle(method_name):
             loss_item.insert(1, "rest_uniform")
@@ -370,6 +390,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "rest_probe_weight": opt.rest_probe_weight,
             "use_rest_adv": use_rest_adversary(method_name),
             "use_orth": use_orthogonal_disentangle(method_name),
+            "use_rest_projector": use_rest_projector(method_name),
+            "is_cifd": is_cifd_method(method_name),
             "manual_local_loss": (
                 opt.manual_local_loss
                 or use_orthogonal_disentangle(method_name)
