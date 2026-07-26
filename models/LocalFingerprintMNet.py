@@ -19,6 +19,7 @@ class LocalFingerprintMNet(nn.Module):
         tv_weight=0.1,
         fusion_mode="fingerprint",
         use_rest_adv=False,
+        use_rest_probe=False,
     ):
         super().__init__()
         if fusion_mode not in {"fingerprint", "concat"}:
@@ -29,6 +30,7 @@ class LocalFingerprintMNet(nn.Module):
         self.tv_weight = tv_weight
         self.fusion_mode = fusion_mode
         self.use_rest_adv = use_rest_adv
+        self.use_rest_probe = use_rest_probe
         id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
         self.mnet = nn.Sequential(
@@ -49,7 +51,7 @@ class LocalFingerprintMNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_channels, env_classes),
         )
-        if use_rest_adv:
+        if use_rest_adv or use_rest_probe:
             self.rest_id_head = nn.Sequential(
                 nn.Linear(in_channels, hidden_channels),
                 nn.ReLU(inplace=True),
@@ -100,8 +102,8 @@ class LocalFingerprintMNet(nn.Module):
         env_logits = self.env_head(adv_features)
         rest_id_logits = None
         if self.rest_id_head is not None:
-            rest_adv_features = GradientReversal.apply(rest, self.grl_alpha)
-            rest_id_logits = self.rest_id_head(rest_adv_features)
+            rest_features = GradientReversal.apply(rest, self.grl_alpha) if self.use_rest_adv else rest
+            rest_id_logits = self.rest_id_head(rest_features)
         if not return_all:
             return fingerprint, mask, env_logits
         return {

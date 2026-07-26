@@ -14,6 +14,7 @@ from utils.config import (
     is_joint_interference_method,
     local_fusion_mode,
     model_path_dict,
+    use_orthogonal_disentangle,
     use_rest_adversary,
 )
 from utils.get_dataset import (
@@ -84,6 +85,7 @@ def load_robust_models(args, device):
             tv_weight=getattr(args, "mask_tv_weight", 0.1),
             fusion_mode=local_fusion_mode(args.method_name, getattr(args, "fusion_mode", "auto")),
             use_rest_adv=use_rest_adversary(args.method_name),
+            use_rest_probe=use_orthogonal_disentangle(args.method_name),
         ).to(device)
         classifier = None
     else:

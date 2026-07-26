@@ -52,6 +52,10 @@ def _stage_weight(config, epoch, stage_name):
     lfdb_conf = config["lfdb"]
     if stage_name == "con":
         return lfdb_conf["con_weight"] if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
+    if stage_name == "orth":
+        return lfdb_conf.get("orth_weight", 0.0) if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
+    if stage_name == "rest_uniform":
+        return lfdb_conf.get("rest_uniform_weight", 0.0) if epoch >= lfdb_conf.get("warmup_epochs", 0) else 0.0
     if stage_name == "adv":
         start = lfdb_conf.get("warmup_epochs", 0) + lfdb_conf.get("stage2_epochs", 0)
         if epoch < start:
@@ -65,6 +69,23 @@ def _stage_weight(config, epoch, stage_name):
             return 0.0
         return lfdb_conf.get("rest_adv_weight", 0.0)
     raise ValueError(f"Unknown staged loss: {stage_name}")
+
+
+def _orthogonal_loss(outputs):
+    fp = F.normalize(outputs["fingerprint"], dim=1)
+    rest = F.normalize(outputs["z_rest"], dim=1)
+    cosine_loss = F.cosine_similarity(fp, rest, dim=1).pow(2).mean()
+
+    fp_centered = fp - fp.mean(dim=0, keepdim=True)
+    rest_centered = rest - rest.mean(dim=0, keepdim=True)
+    covariance = fp_centered.t().matmul(rest_centered) / max(fp.shape[0] - 1, 1)
+    covariance_loss = covariance.pow(2).mean()
+    return cosine_loss + covariance_loss
+
+
+def _uniform_prediction_loss(logits):
+    log_probs = F.log_softmax(logits, dim=1)
+    return -log_probs.mean(dim=1).mean()
 
 
 def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
@@ -172,6 +193,21 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             losses[loss_name] = _stage_weight(config, epoch, "rest_adv") * cls(
                 rest_logits, channel["device_labels"]
             )
+
+        elif loss_name == "orth":
+            channel = get_channel_outputs()
+            orth_loss = 0.5 * (
+                _orthogonal_loss(channel["out_1"]) + _orthogonal_loss(channel["out_2"])
+            )
+            losses[loss_name] = _stage_weight(config, epoch, "orth") * orth_loss
+
+        elif loss_name == "rest_uniform":
+            channel = get_channel_outputs()
+            rest_logits = torch.cat([
+                channel["out_1"]["rest_id_logits"],
+                channel["out_2"]["rest_id_logits"],
+            ], dim=0)
+            losses[loss_name] = _stage_weight(config, epoch, "rest_uniform") * _uniform_prediction_loss(rest_logits)
 
         elif loss_name == "inv":
             channel = get_channel_outputs()
@@ -288,7 +324,10 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             raise ValueError(f"Unknown pretext loss: {loss_name}")
 
     ordered_losses = [losses[name] for name in config["mtl"]["item"]]
-    total_loss = mtl(*ordered_losses)
+    if local_method and config["lfdb"].get("manual_local_loss", False):
+        total_loss = sum(ordered_losses)
+    else:
+        total_loss = mtl(*ordered_losses)
     return ordered_losses + [total_loss], metrics
 
 
@@ -320,6 +359,11 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
             if training:
                 optimizers.zero_grad()
                 loss_items[-1].backward()
+                if config["lfdb"].get("grad_clip", 0.0) > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        [parameter for optimizer in optimizers for group in optimizer.param_groups for parameter in group["params"]],
+                        config["lfdb"]["grad_clip"],
+                    )
                 optimizers.step()
 
             for name, value in metrics.items():
@@ -494,6 +538,7 @@ def pretext(config=None):
                 tv_weight=config["lfdb"]["mask_tv_weight"],
                 fusion_mode=config["lfdb"].get("fusion_mode", "fingerprint"),
                 use_rest_adv=config["lfdb"].get("use_rest_adv", False),
+                use_rest_probe=config["lfdb"].get("use_orth", False),
             ).to(device)
         else:
             lfdb = LightweightLFDB(
