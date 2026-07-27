@@ -183,11 +183,15 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                     channel["out_1"]["id_logits"],
                     channel["out_2"]["id_logits"],
                 ], dim=0)
-                if config["lfdb"].get("is_amlf", False) and config["lfdb"].get("global_id_weight", 0.0) > 0:
-                    global_predictions = mixed_classifier(torch.cat([
-                        channel["out_1"]["h_avg"],
-                        channel["out_2"]["h_avg"],
-                    ], dim=0))
+                if (
+                    config["lfdb"].get("is_amlf", False)
+                    and config["lfdb"].get("global_id_weight", 0.0) > 0
+                    and channel["out_1"].get("global_id_logits") is not None
+                ):
+                    global_predictions = torch.cat([
+                        channel["out_1"]["global_id_logits"],
+                        channel["out_2"]["global_id_logits"],
+                    ], dim=0)
                 else:
                     global_predictions = None
             else:
@@ -606,6 +610,7 @@ def pretext(config=None):
                 use_rest_probe=config["lfdb"].get("use_orth", False),
                 use_rest_projector=config["lfdb"].get("use_rest_projector", False),
                 use_multiscale=config["lfdb"].get("use_multiscale", False),
+                use_global_head=config["lfdb"].get("use_global_head", False),
             ).to(device)
         else:
             lfdb = LightweightLFDB(

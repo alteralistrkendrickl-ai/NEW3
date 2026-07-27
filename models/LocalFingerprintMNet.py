@@ -23,6 +23,7 @@ class LocalFingerprintMNet(nn.Module):
         use_rest_probe=False,
         use_rest_projector=False,
         use_multiscale=False,
+        use_global_head=False,
     ):
         super().__init__()
         if fusion_mode not in {"fingerprint", "concat"}:
@@ -36,6 +37,7 @@ class LocalFingerprintMNet(nn.Module):
         self.use_rest_probe = use_rest_probe
         self.use_rest_projector = use_rest_projector
         self.use_multiscale = use_multiscale
+        self.use_global_head = use_global_head
         id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
         self.mnet = nn.Sequential(
@@ -50,6 +52,13 @@ class LocalFingerprintMNet(nn.Module):
         self.id_head = nn.Sequential(
             nn.Dropout(0.3),
             nn.Linear(id_dim, num_classes),
+        )
+        self.global_id_head = (
+            nn.Sequential(
+                nn.Dropout(0.3),
+                nn.Linear(in_channels, num_classes),
+            )
+            if use_global_head else None
         )
         self.env_head = nn.Sequential(
             nn.Linear(in_channels, hidden_channels),
@@ -149,6 +158,7 @@ class LocalFingerprintMNet(nn.Module):
         else:
             id_features = fingerprint
         id_logits = self.id_head(id_features)
+        global_id_logits = self.global_id_head(h_avg) if self.global_id_head is not None else None
         adv_features = GradientReversal.apply(fingerprint, self.grl_alpha)
         env_logits = self.env_head(adv_features)
         rest_id_logits = None
@@ -172,6 +182,7 @@ class LocalFingerprintMNet(nn.Module):
             "scale_gate": scale_gate,
             "mask": mask,
             "id_logits": id_logits,
+            "global_id_logits": global_id_logits,
             "env_logits": env_logits,
             "rest_id_logits": rest_id_logits,
             "rest_probe_logits": rest_probe_logits,

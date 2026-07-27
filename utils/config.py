@@ -145,6 +145,13 @@ def is_amlf_method(method_name):
     return str(method_name).lower().startswith("amlf")
 
 
+def use_global_local_head(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower()
+    return name.startswith("amlf") and ("v2" in name or "global" in name)
+
+
 def local_fusion_mode(method_name, fusion_mode="auto"):
     if fusion_mode != "auto":
         return fusion_mode
@@ -412,6 +419,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "is_cifd": is_cifd_method(method_name),
             "is_amlf": is_amlf_method(method_name),
             "use_multiscale": is_amlf_method(method_name),
+            "use_global_head": use_global_local_head(method_name),
             "manual_local_loss": (
                 opt.manual_local_loss
                 or is_amlf_method(method_name)
