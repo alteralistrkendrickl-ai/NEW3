@@ -11,6 +11,7 @@ from models.lfdb import LightweightLFDB
 from utils.config import (
     PROJECT_ROOT,
     dataset_path_dict,
+    is_amlf_method,
     is_joint_interference_method,
     is_local_fingerprint_method,
     local_fusion_mode,
@@ -18,7 +19,6 @@ from utils.config import (
     use_orthogonal_disentangle,
     use_rest_adversary,
     use_rest_projector,
-    is_amlf_method,
 )
 from utils.get_dataset import (
     add_noise,
@@ -93,6 +93,17 @@ def load_robust_models(args, device):
             use_multiscale=is_amlf_method(args.method_name),
         ).to(device)
         classifier = None
+        if is_amlf_method(args.method_name):
+            classifier_path = os.path.join(run_root, f"{args.checkpoint}_id_classifier.pth")
+            if os.path.isfile(classifier_path):
+                classifier = create_model(
+                    model_path_dict["LinearClassifier"],
+                    in_dim=local_channels,
+                    num_classes=dataset_path_dict[args.dataset]["pt_class"],
+                ).to(device)
+                classifier.load_state_dict(torch.load(classifier_path, map_location=device))
+                classifier.eval()
+                classifier.local_fusion_classifier = True
     else:
         lfdb = LightweightLFDB(
             feat_dim=args.feature_dim,
@@ -136,9 +147,17 @@ def evaluate_loader(encoder, lfdb, classifier, loader, device, desc="Evaluating"
     with torch.no_grad():
         for inputs, targets in tqdm(loader, desc=desc):
             inputs = inputs.to(device)
-            features = encoder.forward_map(inputs) if hasattr(encoder, "forward_map") and classifier is None else encoder(inputs)
+            if getattr(classifier, "local_fusion_classifier", False) or classifier is None:
+                features = encoder.forward_map(inputs) if hasattr(encoder, "forward_map") else encoder(inputs)
+            else:
+                features = encoder(inputs)
             outputs = lfdb(features, return_all=True)
-            logits = outputs["id_logits"] if classifier is None else classifier(outputs["fingerprint"])
+            if classifier is None:
+                logits = outputs["id_logits"]
+            elif getattr(classifier, "local_fusion_classifier", False):
+                logits = outputs["id_logits"] + 0.5 * classifier(outputs["h_avg"])
+            else:
+                logits = classifier(outputs["fingerprint"])
             predictions.append(torch.argmax(logits, dim=1).cpu().numpy())
             labels.append(targets.numpy())
     predictions = np.concatenate(predictions)

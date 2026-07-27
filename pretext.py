@@ -183,13 +183,25 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                     channel["out_1"]["id_logits"],
                     channel["out_2"]["id_logits"],
                 ], dim=0)
+                if config["lfdb"].get("is_amlf", False) and config["lfdb"].get("global_id_weight", 0.0) > 0:
+                    global_predictions = mixed_classifier(torch.cat([
+                        channel["out_1"]["h_avg"],
+                        channel["out_2"]["h_avg"],
+                    ], dim=0))
+                else:
+                    global_predictions = None
             else:
                 fingerprints = torch.cat([
                     channel["out_1"]["fingerprint"],
                     channel["out_2"]["fingerprint"],
                 ], dim=0)
                 predictions = mixed_classifier(fingerprints)
+                global_predictions = None
             id_loss = cls(predictions, channel["device_labels"])
+            if global_predictions is not None:
+                id_loss = id_loss + config["lfdb"]["global_id_weight"] * cls(
+                    global_predictions, channel["device_labels"]
+                )
             if config["lfdb"].get("is_cifd", False) and config["lfdb"].get("clean_id_weight", 0.0) > 0:
                 clean_output = get_clean_output()
                 id_loss = id_loss + config["lfdb"]["clean_id_weight"] * cls(
@@ -497,7 +509,11 @@ def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
             rot_classifier, mixed_classifier, cls, mml, mtl, lfdb
         )
 
-        if sum(losses[:-1]) < sum(best_record["loss"][:-1]):
+        current_score = metrics.get("sei_acc", 0.0)
+        best_score = best_record.get("metrics", {}).get("sei_acc", float("-inf"))
+        if current_score > best_score or (
+            current_score == best_score and sum(losses[:-1]) < sum(best_record["loss"][:-1])
+        ):
             best_record = {"epoch": epoch, "metrics": metrics, "loss": losses}
             torch.save(encoder.state_dict(), os.path.join(config["exp_path"], "best_encoder.pth"))
             torch.save(mixed_classifier.state_dict(), os.path.join(config["exp_path"], "best_id_classifier.pth"))
