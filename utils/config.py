@@ -123,14 +123,14 @@ def is_joint_interference_method(method_name):
         return False
     method_name = str(method_name)
     name = method_name.lower()
-    return method_name == "NEW3" or name.startswith("robustsei") or name.startswith("cifd")
+    return method_name == "NEW3" or name.startswith("robustsei") or name.startswith("cifd") or name.startswith("amlf")
 
 
 def is_local_fingerprint_method(method_name):
     if method_name is None:
         return False
     name = str(method_name).lower()
-    return name.startswith("robustsei") or name.startswith("cifd")
+    return name.startswith("robustsei") or name.startswith("cifd") or name.startswith("amlf")
 
 
 def is_cifd_method(method_name):
@@ -139,10 +139,18 @@ def is_cifd_method(method_name):
     return str(method_name).lower().startswith("cifd")
 
 
+def is_amlf_method(method_name):
+    if method_name is None:
+        return False
+    return str(method_name).lower().startswith("amlf")
+
+
 def local_fusion_mode(method_name, fusion_mode="auto"):
     if fusion_mode != "auto":
         return fusion_mode
     method_name = "" if method_name is None else str(method_name).lower()
+    if method_name.startswith("amlf"):
+        return "concat"
     if method_name.startswith("cifd"):
         return "fingerprint"
     return "concat" if "fusion" in method_name else "fingerprint"
@@ -229,6 +237,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--awgn_min", type=float, default=awgn_min)
     parser.add_argument("--awgn_max", type=float, default=awgn_max)
     parser.add_argument("--con_weight", type=float, default=con_weight)
+    parser.add_argument("--cons_weight", type=float, dest="con_weight", default=argparse.SUPPRESS)
     parser.add_argument("--inv_weight", type=float, default=inv_weight)
     parser.add_argument("--adv_weight", type=float, default=adv_weight)
     parser.add_argument("--ch_weight", type=float, default=ch_weight)
@@ -272,10 +281,14 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         method_name = "RobustSEI"
     if method_name.lower() in {"cifd", "cifd_sei", "cifd-sei"}:
         method_name = "CIFD_SEI"
+    if method_name.lower() in {"amlf", "amlf_sei", "amlf-sei"}:
+        method_name = "AMLF_SEI"
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if is_cifd_method(method_name) and opt.use_lfdb:
+    if is_amlf_method(method_name) and opt.use_lfdb:
+        loss_item = ["id", "con", "mask"]
+    elif is_cifd_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "inv", "orth", "res"]
     elif is_local_fingerprint_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "con", "adv", "mask"]
@@ -394,8 +407,11 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "use_orth": use_orthogonal_disentangle(method_name),
             "use_rest_projector": use_rest_projector(method_name),
             "is_cifd": is_cifd_method(method_name),
+            "is_amlf": is_amlf_method(method_name),
+            "use_multiscale": is_amlf_method(method_name),
             "manual_local_loss": (
                 opt.manual_local_loss
+                or is_amlf_method(method_name)
                 or use_orthogonal_disentangle(method_name)
                 or use_rest_adversary(method_name)
             ),

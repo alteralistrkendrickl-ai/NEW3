@@ -589,6 +589,7 @@ def pretext(config=None):
                 use_rest_adv=config["lfdb"].get("use_rest_adv", False),
                 use_rest_probe=config["lfdb"].get("use_orth", False),
                 use_rest_projector=config["lfdb"].get("use_rest_projector", False),
+                use_multiscale=config["lfdb"].get("use_multiscale", False),
             ).to(device)
         else:
             lfdb = LightweightLFDB(

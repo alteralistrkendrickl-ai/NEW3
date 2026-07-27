@@ -22,6 +22,7 @@ class LocalFingerprintMNet(nn.Module):
         use_rest_adv=False,
         use_rest_probe=False,
         use_rest_projector=False,
+        use_multiscale=False,
     ):
         super().__init__()
         if fusion_mode not in {"fingerprint", "concat"}:
@@ -34,6 +35,7 @@ class LocalFingerprintMNet(nn.Module):
         self.use_rest_adv = use_rest_adv
         self.use_rest_probe = use_rest_probe
         self.use_rest_projector = use_rest_projector
+        self.use_multiscale = use_multiscale
         id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
         self.mnet = nn.Sequential(
@@ -72,6 +74,14 @@ class LocalFingerprintMNet(nn.Module):
             )
         else:
             self.rest_id_head = None
+        if use_multiscale:
+            self.scale_gate = nn.Sequential(
+                nn.Linear(in_channels, hidden_channels),
+                nn.ReLU(inplace=True),
+                nn.Linear(hidden_channels, 3),
+            )
+        else:
+            self.scale_gate = None
 
     @staticmethod
     def _ensure_map(features):
@@ -84,6 +94,21 @@ class LocalFingerprintMNet(nn.Module):
     def weighted_pool(self, feature_map, mask):
         weighted = feature_map * mask
         return weighted.sum(dim=-1) / mask.sum(dim=-1).clamp_min(1e-6)
+
+    def multiscale_fingerprint(self, feature_map, mask):
+        if not self.use_multiscale:
+            return self.weighted_pool(feature_map, mask), None
+
+        smooth_3 = F.avg_pool1d(feature_map, kernel_size=3, stride=1, padding=1)
+        smooth_5 = F.avg_pool1d(feature_map, kernel_size=5, stride=1, padding=2)
+        scale_features = torch.stack([
+            self.weighted_pool(feature_map, mask),
+            self.weighted_pool(smooth_3, mask),
+            self.weighted_pool(smooth_5, mask),
+        ], dim=1)
+        gate = F.softmax(self.scale_gate(feature_map.mean(dim=-1)), dim=1)
+        fingerprint = (scale_features * gate.unsqueeze(-1)).sum(dim=1)
+        return fingerprint, gate
 
     def rest_pool(self, feature_map, mask):
         rest_mask = 1.0 - mask
@@ -116,7 +141,7 @@ class LocalFingerprintMNet(nn.Module):
         feature_map = self._ensure_map(features)
         mask = self.mnet(feature_map)
         h_avg = feature_map.mean(dim=-1)
-        fingerprint = self.weighted_pool(feature_map, mask)
+        fingerprint, scale_gate = self.multiscale_fingerprint(feature_map, mask)
         rest_raw = self.rest_pool(feature_map, mask)
         rest = self.rest_projector(rest_raw)
         if self.fusion_mode == "concat":
@@ -144,6 +169,7 @@ class LocalFingerprintMNet(nn.Module):
             "z_rest": rest,
             "z_rest_raw": rest_raw,
             "id_features": id_features,
+            "scale_gate": scale_gate,
             "mask": mask,
             "id_logits": id_logits,
             "env_logits": env_logits,

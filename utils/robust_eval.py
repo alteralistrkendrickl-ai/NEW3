@@ -18,6 +18,7 @@ from utils.config import (
     use_orthogonal_disentangle,
     use_rest_adversary,
     use_rest_projector,
+    is_amlf_method,
 )
 from utils.get_dataset import (
     add_noise,
@@ -89,6 +90,7 @@ def load_robust_models(args, device):
             use_rest_adv=use_rest_adversary(args.method_name),
             use_rest_probe=use_orthogonal_disentangle(args.method_name),
             use_rest_projector=use_rest_projector(args.method_name),
+            use_multiscale=is_amlf_method(args.method_name),
         ).to(device)
         classifier = None
     else:
