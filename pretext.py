@@ -158,11 +158,17 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 mixed_inputs,
                 config["augmentation"].get("snr_levels"),
                 enable_awgn=config["augmentation"]["awgn_enable"],
+                low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
+                if config["lfdb"].get("is_snrboost", False) else 0.0,
+                low_snr_max=config["lfdb"].get("snrboost_low_max", 0.0),
             )
             view_2, snr_2, fading_2 = random_joint_interference_view(
                 mixed_inputs,
                 config["augmentation"].get("snr_levels"),
                 enable_awgn=config["augmentation"]["awgn_enable"],
+                low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
+                if config["lfdb"].get("is_snrboost", False) else 0.0,
+                low_snr_max=config["lfdb"].get("snrboost_low_max", 0.0),
             )
         else:
             view_1, snr_1, fading_1 = random_channel_view(

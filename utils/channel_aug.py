@@ -96,7 +96,13 @@ def _apply_random_phase_and_amplitude(signal):
     return rotated * amplitude
 
 
-def random_joint_interference_view(signal, snr_levels=SNR_LEVELS, enable_awgn=True):
+def random_joint_interference_view(
+    signal,
+    snr_levels=SNR_LEVELS,
+    enable_awgn=True,
+    low_snr_prob=0.0,
+    low_snr_max=0.0,
+):
     """Create a CoDiFA channel-noise joint interference view.
 
     The returned labels supervise the interference branch: fading type and
@@ -126,6 +132,13 @@ def random_joint_interference_view(signal, snr_levels=SNR_LEVELS, enable_awgn=Tr
 
     level_tensor = torch.as_tensor(snr_levels, device=signal.device, dtype=signal.dtype)
     snr_indices = torch.randint(0, len(snr_levels), (batch,), device=signal.device)
+    if low_snr_prob > 0:
+        low_indices = torch.nonzero(level_tensor <= float(low_snr_max), as_tuple=False).flatten()
+        if low_indices.numel() > 0:
+            low_mask = torch.rand(batch, device=signal.device) < float(low_snr_prob)
+            if low_mask.any():
+                sampled = low_indices[torch.randint(0, low_indices.numel(), (int(low_mask.sum().item()),), device=signal.device)]
+                snr_indices[low_mask] = sampled
     snr = level_tensor[snr_indices]
     if enable_awgn:
         output = add_awgn(output, snr)
