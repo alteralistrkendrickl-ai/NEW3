@@ -171,6 +171,10 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
         }
         return channel_outputs
 
+    def get_clean_output():
+        clean_features = _forward_feature_map(encoder, mixed_inputs)
+        return lfdb(clean_features, return_all=True)
+
     for loss_name in config["mtl"]["item"]:
         if loss_name == "id":
             channel = get_channel_outputs()
@@ -185,7 +189,13 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                     channel["out_2"]["fingerprint"],
                 ], dim=0)
                 predictions = mixed_classifier(fingerprints)
-            losses[loss_name] = cls(predictions, channel["device_labels"])
+            id_loss = cls(predictions, channel["device_labels"])
+            if config["lfdb"].get("is_cifd", False) and config["lfdb"].get("clean_id_weight", 0.0) > 0:
+                clean_output = get_clean_output()
+                id_loss = id_loss + config["lfdb"]["clean_id_weight"] * cls(
+                    clean_output["id_logits"], device_labels
+                )
+            losses[loss_name] = id_loss
             metrics["sei_acc"] = accuracy(predictions, channel["device_labels"])
 
         elif loss_name == "rest_adv":

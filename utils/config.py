@@ -196,7 +196,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     method_name="NEW3", inv_weight=0.2, int_weight=0.5, warmup_epochs=5,
                     snr_levels=None, stage2_epochs=20, mask_min=0.10, mask_max=0.40, mask_tv_weight=0.1,
                     fusion_mode="auto", rest_adv_weight=0.05, orth_weight=0.05, rest_uniform_weight=0.02,
-                    rest_probe_weight=0.1, manual_local_loss=False, grad_clip=5.0):
+                    rest_probe_weight=0.1, clean_id_weight=0.5, manual_local_loss=False, grad_clip=5.0):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -245,6 +245,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--orth_weight", type=float, default=orth_weight)
     parser.add_argument("--rest_uniform_weight", type=float, default=rest_uniform_weight)
     parser.add_argument("--rest_probe_weight", type=float, default=rest_probe_weight)
+    parser.add_argument("--clean_id_weight", type=float, default=clean_id_weight)
     parser.add_argument("--manual_local_loss", action="store_true", default=manual_local_loss)
     parser.add_argument("--auto_local_loss", action="store_false", dest="manual_local_loss")
     parser.add_argument("--grad_clip", type=float, default=grad_clip)
@@ -388,6 +389,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "orth_weight": opt.orth_weight,
             "rest_uniform_weight": opt.rest_uniform_weight,
             "rest_probe_weight": opt.rest_probe_weight,
+            "clean_id_weight": opt.clean_id_weight,
             "use_rest_adv": use_rest_adversary(method_name),
             "use_orth": use_orthogonal_disentangle(method_name),
             "use_rest_projector": use_rest_projector(method_name),
