@@ -92,6 +92,26 @@ def _uniform_prediction_loss(logits):
     return -log_probs.mean(dim=1).mean()
 
 
+def _supervised_contrastive_loss(features, labels, temperature=0.2):
+    features = F.normalize(features, dim=1)
+    labels = labels.view(-1, 1)
+    positive_mask = torch.eq(labels, labels.t()).float()
+    logits = features.matmul(features.t()) / max(float(temperature), 1e-6)
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    logits_mask = torch.ones_like(positive_mask) - torch.eye(
+        positive_mask.shape[0], device=positive_mask.device
+    )
+    positive_mask = positive_mask * logits_mask
+    exp_logits = torch.exp(logits) * logits_mask
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-12))
+    positive_count = positive_mask.sum(dim=1)
+    valid = positive_count > 0
+    if not valid.any():
+        return features.new_tensor(0.0)
+    loss = -(positive_mask * log_prob).sum(dim=1) / positive_count.clamp_min(1.0)
+    return loss[valid].mean()
+
+
 def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
              cls, mml, mtl, lfdb=None, training=False, epoch=0):
     """Run all configured pretext tasks for one batch."""
@@ -222,6 +242,18 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             ], dim=0)
             losses[loss_name] = _stage_weight(config, epoch, "rest_adv") * cls(
                 rest_logits, channel["device_labels"]
+            )
+
+        elif loss_name == "supcon":
+            channel = get_channel_outputs()
+            features = torch.cat([
+                channel["out_1"]["id_features"],
+                channel["out_2"]["id_features"],
+            ], dim=0)
+            losses[loss_name] = config["lfdb"].get("supcon_weight", 0.0) * _supervised_contrastive_loss(
+                features,
+                channel["device_labels"],
+                config["lfdb"].get("supcon_temp", 0.2),
             )
 
         elif loss_name == "orth":
@@ -611,6 +643,8 @@ def pretext(config=None):
                 use_rest_projector=config["lfdb"].get("use_rest_projector", False),
                 use_multiscale=config["lfdb"].get("use_multiscale", False),
                 use_global_head=config["lfdb"].get("use_global_head", False),
+                use_cosine_head=config["lfdb"].get("use_cosine_head", False),
+                cosine_scale=config["lfdb"].get("cosine_scale", 16.0),
             ).to(device)
         else:
             lfdb = LightweightLFDB(

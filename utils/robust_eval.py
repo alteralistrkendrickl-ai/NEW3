@@ -16,6 +16,7 @@ from utils.config import (
     is_local_fingerprint_method,
     local_fusion_mode,
     model_path_dict,
+    use_cosine_local_head,
     use_orthogonal_disentangle,
     use_rest_adversary,
     use_global_local_head,
@@ -93,6 +94,8 @@ def load_robust_models(args, device):
             use_rest_projector=use_rest_projector(args.method_name),
             use_multiscale=is_amlf_method(args.method_name),
             use_global_head=use_global_local_head(args.method_name),
+            use_cosine_head=use_cosine_local_head(args.method_name),
+            cosine_scale=getattr(args, "cosine_scale", 16.0),
         ).to(device)
         classifier = None
     else:

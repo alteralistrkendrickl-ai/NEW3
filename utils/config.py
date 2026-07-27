@@ -149,7 +149,14 @@ def use_global_local_head(method_name):
     if method_name is None:
         return False
     name = str(method_name).lower()
-    return name.startswith("amlf") and ("v2" in name or "global" in name)
+    return name.startswith("amlf") and ("v2" in name or "v3" in name or "global" in name or "cos" in name or "arc" in name)
+
+
+def use_cosine_local_head(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower()
+    return name.startswith("amlf") and ("v3" in name or "cos" in name or "arc" in name)
 
 
 def local_fusion_mode(method_name, fusion_mode="auto"):
@@ -212,6 +219,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     snr_levels=None, stage2_epochs=20, mask_min=0.10, mask_max=0.40, mask_tv_weight=0.1,
                     fusion_mode="auto", rest_adv_weight=0.05, orth_weight=0.05, rest_uniform_weight=0.02,
                     rest_probe_weight=0.1, clean_id_weight=0.5, global_id_weight=0.5,
+                    supcon_weight=0.05, supcon_temp=0.2, cosine_scale=16.0,
                     manual_local_loss=False, grad_clip=5.0):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
@@ -264,6 +272,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--rest_probe_weight", type=float, default=rest_probe_weight)
     parser.add_argument("--clean_id_weight", type=float, default=clean_id_weight)
     parser.add_argument("--global_id_weight", type=float, default=global_id_weight)
+    parser.add_argument("--supcon_weight", type=float, default=supcon_weight)
+    parser.add_argument("--supcon_temp", type=float, default=supcon_temp)
+    parser.add_argument("--cosine_scale", type=float, default=cosine_scale)
     parser.add_argument("--manual_local_loss", action="store_true", default=manual_local_loss)
     parser.add_argument("--auto_local_loss", action="store_false", dest="manual_local_loss")
     parser.add_argument("--grad_clip", type=float, default=grad_clip)
@@ -297,6 +308,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     tsla_conf = TSLA_parse_args(opt)
     if is_amlf_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "con", "mask"]
+        if use_cosine_local_head(method_name):
+            loss_item.insert(1, "supcon")
     elif is_cifd_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "inv", "orth", "res"]
     elif is_local_fingerprint_method(method_name) and opt.use_lfdb:
@@ -413,6 +426,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "rest_probe_weight": opt.rest_probe_weight,
             "clean_id_weight": opt.clean_id_weight,
             "global_id_weight": opt.global_id_weight,
+            "supcon_weight": opt.supcon_weight,
+            "supcon_temp": opt.supcon_temp,
+            "cosine_scale": opt.cosine_scale,
             "use_rest_adv": use_rest_adversary(method_name),
             "use_orth": use_orthogonal_disentangle(method_name),
             "use_rest_projector": use_rest_projector(method_name),
@@ -420,6 +436,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "is_amlf": is_amlf_method(method_name),
             "use_multiscale": is_amlf_method(method_name),
             "use_global_head": use_global_local_head(method_name),
+            "use_cosine_head": use_cosine_local_head(method_name),
             "manual_local_loss": (
                 opt.manual_local_loss
                 or is_amlf_method(method_name)

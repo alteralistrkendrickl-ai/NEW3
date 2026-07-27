@@ -5,6 +5,23 @@ import torch.nn.functional as F
 from models.lfdb import GradientReversal
 
 
+class CosineClassifier(nn.Module):
+    """Normalized classifier for compact fine-grained emitter features."""
+
+    def __init__(self, in_dim, num_classes, scale=16.0, dropout=0.3):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.weight = nn.Parameter(torch.empty(num_classes, in_dim))
+        self.scale = float(scale)
+        nn.init.xavier_uniform_(self.weight)
+
+    def forward(self, x):
+        x = self.dropout(x)
+        x = F.normalize(x, dim=1)
+        weight = F.normalize(self.weight, dim=1)
+        return self.scale * F.linear(x, weight)
+
+
 class LocalFingerprintMNet(nn.Module):
     """Local channel-time fingerprint selection with environment adversarial head."""
 
@@ -24,6 +41,8 @@ class LocalFingerprintMNet(nn.Module):
         use_rest_projector=False,
         use_multiscale=False,
         use_global_head=False,
+        use_cosine_head=False,
+        cosine_scale=16.0,
     ):
         super().__init__()
         if fusion_mode not in {"fingerprint", "concat"}:
@@ -38,6 +57,7 @@ class LocalFingerprintMNet(nn.Module):
         self.use_rest_projector = use_rest_projector
         self.use_multiscale = use_multiscale
         self.use_global_head = use_global_head
+        self.use_cosine_head = use_cosine_head
         id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
         self.mnet = nn.Sequential(
@@ -49,14 +69,22 @@ class LocalFingerprintMNet(nn.Module):
             nn.Conv1d(mid_channels, in_channels, kernel_size=1),
             nn.Sigmoid(),
         )
-        self.id_head = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(id_dim, num_classes),
-        )
-        self.global_id_head = (
+        self.id_head = (
+            CosineClassifier(id_dim, num_classes, scale=cosine_scale)
+            if use_cosine_head else
             nn.Sequential(
                 nn.Dropout(0.3),
-                nn.Linear(in_channels, num_classes),
+                nn.Linear(id_dim, num_classes),
+            )
+        )
+        self.global_id_head = (
+            (
+                CosineClassifier(in_channels, num_classes, scale=cosine_scale)
+                if use_cosine_head else
+                nn.Sequential(
+                    nn.Dropout(0.3),
+                    nn.Linear(in_channels, num_classes),
+                )
             )
             if use_global_head else None
         )

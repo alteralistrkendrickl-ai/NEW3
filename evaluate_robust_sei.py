@@ -27,6 +27,7 @@ def build_parser():
     parser.add_argument("--TSLA_depth", type=int, default=3)
     parser.add_argument("--TSLA_dropout", type=float, default=0.3)
     parser.add_argument("--fusion_mode", choices=["auto", "fingerprint", "concat"], default="auto")
+    parser.add_argument("--cosine_scale", type=float, default=16.0)
     return parser
 
 
