@@ -11,8 +11,6 @@ from utils.utils import SummaryWriter
 from utils.config import (
     finetune_config,
     is_amlf_method,
-    is_joint_interference_method,
-    is_local_fingerprint_method,
     local_fusion_mode,
     use_cosine_local_head,
     use_global_local_head,
@@ -99,7 +97,14 @@ def build_feature_extractor(config, device):
         raise FileNotFoundError(
             f"LFDB weights not found: {lfdb_path}. Run pretext.py with LFDB enabled first."
         )
-    if is_joint_interference_method(config.get("method_name")) and is_local_fingerprint_method(config.get("method_name")):
+    lfdb_state = torch.load(lfdb_path, map_location=device)
+    if isinstance(lfdb_state, dict) and "state_dict" in lfdb_state:
+        lfdb_state = lfdb_state["state_dict"]
+    uses_local_fingerprint = any(
+        key.startswith(("mnet.", "id_head.", "env_head."))
+        for key in lfdb_state
+    )
+    if uses_local_fingerprint:
         local_channels = (
             config["encoder"]["TSLA_config"]["emb_dim"]
             if uses_temporal_encoder_config(config["encoder"]["name"])
@@ -124,7 +129,7 @@ def build_feature_extractor(config, device):
             snr_classes=config["lfdb"]["snr_classes"],
             fading_classes=config["lfdb"]["fading_classes"],
         ).to(device)
-    lfdb.load_state_dict(torch.load(lfdb_path, map_location=device))
+    lfdb.load_state_dict(lfdb_state)
     return FingerprintExtractor(encoder, lfdb)
 
 
