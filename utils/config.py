@@ -171,7 +171,7 @@ def use_cosine_local_head(method_name):
     if method_name is None:
         return False
     name = str(method_name).lower()
-    return name.startswith("amlf") and ("v3" in name or "cos" in name or "arc" in name)
+    return "cos" in name or "arc" in name
 
 
 def local_fusion_mode(method_name, fusion_mode="auto"):
