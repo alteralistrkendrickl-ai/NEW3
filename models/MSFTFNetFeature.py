@@ -111,7 +111,8 @@ class MSFTFNet(nn.Module):
     @staticmethod
     def _complex_spectrum(x):
         complex_x = torch.complex(x[:, 0].float(), x[:, 1].float())
-        spectrum = torch.fft.rfft(complex_x, dim=-1, norm="ortho")
+        spectrum = torch.fft.fft(complex_x, dim=-1, norm="ortho")
+        spectrum = spectrum[..., : spectrum.shape[-1] // 2 + 1]
         magnitude = torch.log1p(torch.abs(spectrum))
         phase_cos = torch.cos(torch.angle(spectrum))
         return torch.stack([magnitude, phase_cos], dim=1).to(dtype=x.dtype)
