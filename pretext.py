@@ -161,18 +161,31 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             return channel_outputs
         if is_joint_interference_method(config.get("method_name")):
             snr_levels = config["augmentation"].get("snr_levels")
-            if config["lfdb"].get("is_clean_anchor", False) and training:
+            view_1_levels = snr_levels
+            view_2_levels = snr_levels
+            if config["lfdb"].get("is_clean_anchor_v2", False):
                 low_start = config["lfdb"].get("low_snr_start_epoch", 20)
                 very_low_start = config["lfdb"].get("very_low_snr_start_epoch", 60)
-                minimum_snr = 0.0
-                if epoch >= very_low_start:
-                    minimum_snr = -10.0
-                elif epoch >= low_start:
-                    minimum_snr = -5.0
-                snr_levels = tuple(level for level in snr_levels if level >= minimum_snr)
+                view_1_levels = tuple(level for level in snr_levels if level >= 0.0)
+                if training and epoch < low_start:
+                    view_2_levels = tuple(level for level in snr_levels if 0.0 <= level <= 10.0)
+                elif training and epoch < very_low_start:
+                    view_2_levels = tuple(level for level in snr_levels if -5.0 <= level <= 5.0)
+                else:
+                    view_2_levels = tuple(level for level in snr_levels if level <= 5.0)
+            elif config["lfdb"].get("is_clean_anchor", False) and training:
+                minimum_snr = (
+                    -10.0 if epoch >= config["lfdb"].get("very_low_snr_start_epoch", 60)
+                    else -5.0 if epoch >= config["lfdb"].get("low_snr_start_epoch", 20)
+                    else 0.0
+                )
+                view_1_levels = tuple(level for level in snr_levels if level >= minimum_snr)
+                view_2_levels = view_1_levels
+            if not view_1_levels or not view_2_levels:
+                raise ValueError("The configured SNR levels do not support the active curriculum stage.")
             view_1, snr_1, fading_1 = random_joint_interference_view(
                 mixed_inputs,
-                snr_levels,
+                view_1_levels,
                 enable_awgn=config["augmentation"]["awgn_enable"],
                 low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
                 if config["lfdb"].get("is_snrboost", False) else 0.0,
@@ -180,7 +193,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             )
             view_2, snr_2, fading_2 = random_joint_interference_view(
                 mixed_inputs,
-                snr_levels,
+                view_2_levels,
                 enable_awgn=config["augmentation"]["awgn_enable"],
                 low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
                 if config["lfdb"].get("is_snrboost", False) else 0.0,

@@ -160,6 +160,13 @@ def is_clean_anchor_method(method_name):
     return "cleananchor" in name or "clean_anchor" in name
 
 
+def is_clean_anchor_v2_method(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "cleananchorv2" in name or "clean_anchor_v2" in name
+
+
 def uses_temporal_encoder_config(encoder_name):
     if encoder_name is None:
         return False
@@ -475,6 +482,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "snrboost_low_prob": opt.snrboost_low_prob,
             "snrboost_low_max": opt.snrboost_low_max,
             "is_clean_anchor": is_clean_anchor_method(method_name),
+            "is_clean_anchor_v2": is_clean_anchor_v2_method(method_name),
             "clean_cons_weight": opt.clean_cons_weight,
             "noisy_id_weight": opt.noisy_id_weight,
             "low_snr_start_epoch": opt.low_snr_start_epoch,
