@@ -76,6 +76,7 @@ for ft_class in [20, 10]:
 model_path_dict = {
     "ResNet18": os.path.join(PROJECT_ROOT, "models", "ResNet18Feature.py"),
     "CVTSLANet": os.path.join(PROJECT_ROOT, "models", "CVTSLANetFeature.py"),
+    "MSFTFNet": os.path.join(PROJECT_ROOT, "models", "MSFTFNetFeature.py"),
     "CVTSLANet-Shallow": os.path.join(PROJECT_ROOT, "models", "SCVTSLANet.py"),
     "CVTSLANet-Deep": os.path.join(PROJECT_ROOT, "models", "DCVTSLANet.py"),
     "CVCM": os.path.join(PROJECT_ROOT, "models", "CVCMFeature.py"),
@@ -149,6 +150,13 @@ def is_snrboost_method(method_name):
     if method_name is None:
         return False
     return "snrboost" in str(method_name).lower()
+
+
+def uses_temporal_encoder_config(encoder_name):
+    if encoder_name is None:
+        return False
+    name = str(encoder_name).lower()
+    return "tsla" in name or name.startswith("msftf")
 
 
 def use_global_local_head(method_name):

@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from models.lfdb import LightweightLFDB
 from utils.utils import SummaryWriter
-from utils.config import finetune_config
+from utils.config import finetune_config, uses_temporal_encoder_config
 from utils.feature_augmentation import (
     build_auxiliary_statistics,
     distribution_calibrated_augmentation,
@@ -33,7 +33,7 @@ class FingerprintExtractor(nn.Module):
 
 def build_feature_extractor(config, device):
     conf_en = config["encoder"]
-    if "TSLA" in conf_en["root"]:
+    if uses_temporal_encoder_config(conf_en["name"]):
         encoder = create_model(conf_en["root"], feature_dim=conf_en["feature_dim"], dtype=config["dataset"]["type"], **conf_en["TSLA_config"])
     else:
         encoder = create_model(conf_en["root"], feature_dim=conf_en["feature_dim"], dtype=config["dataset"]["type"])

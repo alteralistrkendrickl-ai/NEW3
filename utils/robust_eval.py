@@ -21,6 +21,7 @@ from utils.config import (
     use_rest_adversary,
     use_global_local_head,
     use_rest_projector,
+    uses_temporal_encoder_config,
 )
 from utils.get_dataset import (
     add_noise,
@@ -61,7 +62,7 @@ def make_encoder(args, device):
         "feature_dim": args.feature_dim,
         "dtype": args.input_type,
     }
-    if "TSLA" in args.encoder:
+    if uses_temporal_encoder_config(args.encoder):
         encoder_kwargs.update({
             "seq_len": args.TSLA_len,
             "patch_size": args.TSLA_patch,
@@ -80,7 +81,7 @@ def load_robust_models(args, device):
     load_encoder_weights(encoder, os.path.join(run_root, f"{args.checkpoint}_encoder.pth"), device)
 
     if is_joint_interference_method(args.method_name) and is_local_fingerprint_method(args.method_name):
-        local_channels = args.TSLA_emb if "TSLA" in args.encoder else args.feature_dim
+        local_channels = args.TSLA_emb if uses_temporal_encoder_config(args.encoder) else args.feature_dim
         lfdb = LocalFingerprintMNet(
             in_channels=local_channels,
             num_classes=dataset_path_dict[args.dataset]["pt_class"],

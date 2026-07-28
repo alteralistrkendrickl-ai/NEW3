@@ -12,7 +12,12 @@ from tqdm import tqdm
 from models.LocalFingerprintMNet import LocalFingerprintMNet
 from models.lfdb import LightweightLFDB
 from utils.channel_aug import add_random_awgn, random_channel_view, random_joint_interference_view
-from utils.config import is_joint_interference_method, is_local_fingerprint_method, pretrain_config
+from utils.config import (
+    is_joint_interference_method,
+    is_local_fingerprint_method,
+    pretrain_config,
+    uses_temporal_encoder_config,
+)
 from utils.get_dataset import get_pretrain_dataloader
 from utils.utils import (
     ListApply,
@@ -614,7 +619,7 @@ def pretext(config=None):
         "feature_dim": encoder_config["feature_dim"],
         "dtype": config["dataset"]["type"],
     }
-    if "TSLA" in encoder_config["name"]:
+    if uses_temporal_encoder_config(encoder_config["name"]):
         encoder_kwargs.update(encoder_config["TSLA_config"])
     encoder = create_model(encoder_config["root"], **encoder_kwargs).to(device)
     rot_classifier = create_model(
@@ -633,7 +638,7 @@ def pretext(config=None):
         if is_local_fingerprint_method(config.get("method_name")):
             local_channels = (
                 config["encoder"]["TSLA_config"]["emb_dim"]
-                if "TSLA" in config["encoder"]["name"]
+                if uses_temporal_encoder_config(config["encoder"]["name"])
                 else config["encoder"]["feature_dim"]
             )
             lfdb = LocalFingerprintMNet(
