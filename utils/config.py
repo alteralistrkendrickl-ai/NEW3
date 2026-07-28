@@ -475,7 +475,7 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
                     tsla_conf=None, RANDOM_SEED=2024, pretrain_normalize_fn="same", pretrain_batch_size=32, pretrain_epoch=250, ablate="",
                     extra_info="", pretrain_date="", snr_enable=False, snr=0, use_dcfa=False, dcfa_aug_per_class=100,
                     dcfa_top_m=3, dcfa_alpha=1.0, dcfa_beta=0.2, dcfa_epsilon=1e-3, aux_dataset="ads-b",
-                    use_lfdb_features=False, method_name="NEW3"):
+                    use_lfdb_features=False, method_name="NEW3", eval_classifier="raw_lr", lr_max_iter=1000):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifier", "-c", type=str, default=classifier_name)
@@ -509,6 +509,13 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
     parser.add_argument("--dcfa_epsilon", type=float, default=dcfa_epsilon)
     parser.add_argument("--aux_dataset", type=str, default=aux_dataset)
     parser.add_argument("--use_lfdb_features", action="store_true", default=use_lfdb_features)
+    parser.add_argument(
+        "--eval_classifier",
+        choices=["raw_lr", "l2_lr", "prototype"],
+        default=eval_classifier,
+        help="Classifier used for frozen-feature downstream evaluation.",
+    )
+    parser.add_argument("--lr_max_iter", type=int, default=lr_max_iter)
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
     opt = parser.parse_args()
     method_name = opt.method_name.strip()
@@ -540,7 +547,8 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
             exp_suffix += f"_{item}Ablate"
     dataset_fullname = opt.dataset + "_" + opt.input_type + ("_snr" if opt.snr_enable else "")
     method_suffix = f"_{method_name}" if method_name else ""
-    exp = f"{opt.encoder}_{dataset_fullname}_PT_{opt.pretrain_normalize_fn}Norm_FT_{opt.normalize_fn}Norm{method_suffix}{exp_suffix}"
+    eval_suffix = "" if opt.eval_classifier == "raw_lr" else f"_{opt.eval_classifier}"
+    exp = f"{opt.encoder}_{dataset_fullname}_PT_{opt.pretrain_normalize_fn}Norm_FT_{opt.normalize_fn}Norm{method_suffix}{exp_suffix}{eval_suffix}"
     pretrain_exp = f"{opt.encoder}_{dataset_path_dict[opt.dataset]['name']}_{opt.input_type}_{opt.pretrain_normalize_fn}Norm{method_suffix}{exp_suffix}"
     pretrain_exp_type = f"Pretext_{method_name}_random_rot" if method_name else "Pretext_random_rot"
     platform = "windows" if sys.platform.startswith("win") else "linux"
@@ -610,6 +618,10 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
         "optimizer": {
             "lr": opt.lr,
             "weight_decay": opt.weight_decay
+        },
+        "evaluation": {
+            "classifier": opt.eval_classifier,
+            "lr_max_iter": opt.lr_max_iter,
         },
         "dcfa": {
             "enabled": opt.use_dcfa,

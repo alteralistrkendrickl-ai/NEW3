@@ -30,6 +30,8 @@ from utils.get_dataset import get_finetune_dataloader
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import Normalizer
 
 
 class FingerprintExtractor(nn.Module):
@@ -42,6 +44,42 @@ class FingerprintExtractor(nn.Module):
         features = self.encoder.forward_map(inputs) if hasattr(self.encoder, "forward_map") else self.encoder(inputs)
         outputs = self.lfdb(features, return_all=True)
         return outputs.get("id_features", outputs["fingerprint"])
+
+
+class CosinePrototypeClassifier:
+    def fit(self, features, labels):
+        features = self._normalize(features)
+        self.classes_ = np.unique(labels)
+        self.prototypes_ = np.stack(
+            [features[labels == label].mean(axis=0) for label in self.classes_]
+        )
+        self.prototypes_ = self._normalize(self.prototypes_)
+        return self
+
+    def predict(self, features):
+        similarities = self._normalize(features) @ self.prototypes_.T
+        return self.classes_[np.argmax(similarities, axis=1)]
+
+    @staticmethod
+    def _normalize(features):
+        norms = np.linalg.norm(features, axis=1, keepdims=True)
+        return features / np.clip(norms, 1e-12, None)
+
+
+def build_downstream_classifier(config):
+    evaluation = config.get("evaluation", {})
+    classifier_name = evaluation.get("classifier", "raw_lr")
+    max_iter = evaluation.get("lr_max_iter", 1000)
+    if classifier_name == "raw_lr":
+        return LogisticRegression(max_iter=max_iter)
+    if classifier_name == "l2_lr":
+        return make_pipeline(
+            Normalizer(norm="l2"),
+            LogisticRegression(max_iter=max_iter),
+        )
+    if classifier_name == "prototype":
+        return CosinePrototypeClassifier()
+    raise ValueError(f"Unsupported downstream classifier: {classifier_name}")
 
 
 def build_feature_extractor(config, device):
@@ -131,7 +169,7 @@ def finetune(config, logger):
     device = config["device"]
     encoder = build_feature_extractor(config, device)
 
-    classifier = LogisticRegression(max_iter=1000)
+    classifier = build_downstream_classifier(config)
 
     acc, macro_f1 = run_step(logger, encoder, classifier, train_dataloader, test_dataloader, device, config)
 
