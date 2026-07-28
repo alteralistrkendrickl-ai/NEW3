@@ -5,9 +5,22 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from models.LocalFingerprintMNet import LocalFingerprintMNet
 from models.lfdb import LightweightLFDB
 from utils.utils import SummaryWriter
-from utils.config import finetune_config, uses_temporal_encoder_config
+from utils.config import (
+    finetune_config,
+    is_amlf_method,
+    is_joint_interference_method,
+    is_local_fingerprint_method,
+    local_fusion_mode,
+    use_cosine_local_head,
+    use_global_local_head,
+    use_orthogonal_disentangle,
+    use_rest_adversary,
+    use_rest_projector,
+    uses_temporal_encoder_config,
+)
 from utils.feature_augmentation import (
     build_auxiliary_statistics,
     distribution_calibrated_augmentation,
@@ -26,9 +39,9 @@ class FingerprintExtractor(nn.Module):
         self.lfdb = lfdb
 
     def forward(self, inputs):
-        features = self.encoder(inputs)
-        fingerprint, _, _ = self.lfdb(features)
-        return fingerprint
+        features = self.encoder.forward_map(inputs) if hasattr(self.encoder, "forward_map") else self.encoder(inputs)
+        outputs = self.lfdb(features, return_all=True)
+        return outputs.get("id_features", outputs["fingerprint"])
 
 
 def build_feature_extractor(config, device):
@@ -48,12 +61,31 @@ def build_feature_extractor(config, device):
         raise FileNotFoundError(
             f"LFDB weights not found: {lfdb_path}. Run pretext.py with LFDB enabled first."
         )
-    lfdb = LightweightLFDB(
-        feat_dim=config["encoder"]["feature_dim"],
-        num_classes=config["lfdb"]["num_classes"],
-        snr_classes=config["lfdb"]["snr_classes"],
-        fading_classes=config["lfdb"]["fading_classes"],
-    ).to(device)
+    if is_joint_interference_method(config.get("method_name")) and is_local_fingerprint_method(config.get("method_name")):
+        local_channels = (
+            config["encoder"]["TSLA_config"]["emb_dim"]
+            if uses_temporal_encoder_config(config["encoder"]["name"])
+            else config["encoder"]["feature_dim"]
+        )
+        lfdb = LocalFingerprintMNet(
+            in_channels=local_channels,
+            num_classes=config["lfdb"]["num_classes"],
+            env_classes=config["lfdb"]["snr_classes"] * config["lfdb"]["fading_classes"],
+            fusion_mode=local_fusion_mode(config.get("method_name")),
+            use_rest_adv=use_rest_adversary(config.get("method_name")),
+            use_rest_probe=use_orthogonal_disentangle(config.get("method_name")),
+            use_rest_projector=use_rest_projector(config.get("method_name")),
+            use_multiscale=is_amlf_method(config.get("method_name")),
+            use_global_head=use_global_local_head(config.get("method_name")),
+            use_cosine_head=use_cosine_local_head(config.get("method_name")),
+        ).to(device)
+    else:
+        lfdb = LightweightLFDB(
+            feat_dim=config["encoder"]["feature_dim"],
+            num_classes=config["lfdb"]["num_classes"],
+            snr_classes=config["lfdb"]["snr_classes"],
+            fading_classes=config["lfdb"]["fading_classes"],
+        ).to(device)
     lfdb.load_state_dict(torch.load(lfdb_path, map_location=device))
     return FingerprintExtractor(encoder, lfdb)
 
