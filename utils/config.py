@@ -77,6 +77,7 @@ model_path_dict = {
     "ResNet18": os.path.join(PROJECT_ROOT, "models", "ResNet18Feature.py"),
     "CVTSLANet": os.path.join(PROJECT_ROOT, "models", "CVTSLANetFeature.py"),
     "MSFTFNet": os.path.join(PROJECT_ROOT, "models", "MSFTFNetFeature.py"),
+    "SAFNet": os.path.join(PROJECT_ROOT, "models", "SAFNetFeature.py"),
     "CVTSLANet-Shallow": os.path.join(PROJECT_ROOT, "models", "SCVTSLANet.py"),
     "CVTSLANet-Deep": os.path.join(PROJECT_ROOT, "models", "DCVTSLANet.py"),
     "CVCM": os.path.join(PROJECT_ROOT, "models", "CVCMFeature.py"),
@@ -156,7 +157,7 @@ def uses_temporal_encoder_config(encoder_name):
     if encoder_name is None:
         return False
     name = str(encoder_name).lower()
-    return "tsla" in name or name.startswith("msftf")
+    return "tsla" in name or name.startswith("msftf") or name.startswith("saf")
 
 
 def use_global_local_head(method_name):
