@@ -39,7 +39,12 @@ class FingerprintExtractor(nn.Module):
         self.lfdb = lfdb
 
     def forward(self, inputs):
-        features = self.encoder.forward_map(inputs) if hasattr(self.encoder, "forward_map") else self.encoder(inputs)
+        uses_feature_map = isinstance(self.lfdb, LocalFingerprintMNet)
+        features = (
+            self.encoder.forward_map(inputs)
+            if uses_feature_map and hasattr(self.encoder, "forward_map")
+            else self.encoder(inputs)
+        )
         outputs = self.lfdb(features, return_all=True)
         return outputs.get("id_features", outputs["fingerprint"])
 
