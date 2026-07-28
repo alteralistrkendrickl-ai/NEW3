@@ -135,6 +135,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
     base_features = None
     lfdb_outputs = None
     channel_outputs = None
+    clean_output = None
     losses = {}
     metrics = {"rot_acc": 0.0, "sei_acc": 0.0, "mixed_acc": 0.0}
     local_method = is_local_fingerprint_method(config.get("method_name"))
@@ -159,9 +160,19 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
         if channel_outputs is not None:
             return channel_outputs
         if is_joint_interference_method(config.get("method_name")):
+            snr_levels = config["augmentation"].get("snr_levels")
+            if config["lfdb"].get("is_clean_anchor", False) and training:
+                low_start = config["lfdb"].get("low_snr_start_epoch", 20)
+                very_low_start = config["lfdb"].get("very_low_snr_start_epoch", 60)
+                minimum_snr = 0.0
+                if epoch >= very_low_start:
+                    minimum_snr = -10.0
+                elif epoch >= low_start:
+                    minimum_snr = -5.0
+                snr_levels = tuple(level for level in snr_levels if level >= minimum_snr)
             view_1, snr_1, fading_1 = random_joint_interference_view(
                 mixed_inputs,
-                config["augmentation"].get("snr_levels"),
+                snr_levels,
                 enable_awgn=config["augmentation"]["awgn_enable"],
                 low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
                 if config["lfdb"].get("is_snrboost", False) else 0.0,
@@ -169,7 +180,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             )
             view_2, snr_2, fading_2 = random_joint_interference_view(
                 mixed_inputs,
-                config["augmentation"].get("snr_levels"),
+                snr_levels,
                 enable_awgn=config["augmentation"]["awgn_enable"],
                 low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
                 if config["lfdb"].get("is_snrboost", False) else 0.0,
@@ -203,8 +214,11 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
         return channel_outputs
 
     def get_clean_output():
-        clean_features = _forward_feature_map(encoder, mixed_inputs)
-        return lfdb(clean_features, return_all=True)
+        nonlocal clean_output
+        if clean_output is None:
+            clean_features = _forward_feature_map(encoder, mixed_inputs)
+            clean_output = lfdb(clean_features, return_all=True)
+        return clean_output
 
     for loss_name in config["mtl"]["item"]:
         if loss_name == "id":
@@ -232,7 +246,16 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 ], dim=0)
                 predictions = mixed_classifier(fingerprints)
                 global_predictions = None
-            id_loss = cls(predictions, channel["device_labels"])
+            noisy_id_loss = cls(predictions, channel["device_labels"])
+            if config["lfdb"].get("is_clean_anchor", False):
+                clean = get_clean_output()
+                id_loss = (
+                    config["lfdb"].get("clean_id_weight", 1.0)
+                    * cls(clean["id_logits"], device_labels)
+                    + config["lfdb"].get("noisy_id_weight", 0.5) * noisy_id_loss
+                )
+            else:
+                id_loss = noisy_id_loss
             if global_predictions is not None:
                 id_loss = id_loss + config["lfdb"]["global_id_weight"] * cls(
                     global_predictions, channel["device_labels"]
@@ -244,6 +267,19 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 )
             losses[loss_name] = id_loss
             metrics["sei_acc"] = accuracy(predictions, channel["device_labels"])
+
+        elif loss_name == "clean_cons":
+            channel = get_channel_outputs()
+            clean_features = get_clean_output()["id_features"].detach()
+            consistency = 0.5 * (
+                1.0 - F.cosine_similarity(
+                    channel["out_1"]["id_features"], clean_features, dim=1
+                ).mean()
+                + 1.0 - F.cosine_similarity(
+                    channel["out_2"]["id_features"], clean_features, dim=1
+                ).mean()
+            )
+            losses[loss_name] = config["lfdb"].get("clean_cons_weight", 0.2) * consistency
 
         elif loss_name == "rest_adv":
             channel = get_channel_outputs()

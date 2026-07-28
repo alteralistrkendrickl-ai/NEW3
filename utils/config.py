@@ -153,6 +153,13 @@ def is_snrboost_method(method_name):
     return "snrboost" in str(method_name).lower()
 
 
+def is_clean_anchor_method(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "cleananchor" in name or "clean_anchor" in name
+
+
 def uses_temporal_encoder_config(encoder_name):
     if encoder_name is None:
         return False
@@ -236,6 +243,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     rest_probe_weight=0.1, clean_id_weight=0.5, global_id_weight=0.5,
                     supcon_weight=0.05, supcon_temp=0.2, cosine_scale=16.0,
                     snrboost_low_prob=0.65, snrboost_low_max=0.0,
+                    clean_cons_weight=0.2, noisy_id_weight=0.5,
+                    low_snr_start_epoch=20, very_low_snr_start_epoch=60,
                     manual_local_loss=False, grad_clip=5.0):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
@@ -293,6 +302,10 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--cosine_scale", type=float, default=cosine_scale)
     parser.add_argument("--snrboost_low_prob", type=float, default=snrboost_low_prob)
     parser.add_argument("--snrboost_low_max", type=float, default=snrboost_low_max)
+    parser.add_argument("--clean_cons_weight", type=float, default=clean_cons_weight)
+    parser.add_argument("--noisy_id_weight", type=float, default=noisy_id_weight)
+    parser.add_argument("--low_snr_start_epoch", type=int, default=low_snr_start_epoch)
+    parser.add_argument("--very_low_snr_start_epoch", type=int, default=very_low_snr_start_epoch)
     parser.add_argument("--manual_local_loss", action="store_true", default=manual_local_loss)
     parser.add_argument("--auto_local_loss", action="store_false", dest="manual_local_loss")
     parser.add_argument("--grad_clip", type=float, default=grad_clip)
@@ -311,6 +324,15 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         raise ValueError("rot_num must be at least 2")
     if opt.awgn_min > opt.awgn_max:
         raise ValueError("awgn_min cannot be greater than awgn_max")
+    if not opt.snr_levels:
+        raise ValueError("snr_levels cannot be empty")
+    if opt.clean_cons_weight < 0 or opt.clean_id_weight < 0 or opt.noisy_id_weight < 0:
+        raise ValueError("clean-anchor loss weights must be non-negative")
+    if opt.low_snr_start_epoch < 0 or opt.very_low_snr_start_epoch < opt.low_snr_start_epoch:
+        raise ValueError(
+            "low-SNR curriculum epochs must satisfy 0 <= low_snr_start_epoch "
+            "<= very_low_snr_start_epoch"
+        )
 
     method_name = opt.method_name.strip()
     if method_name.upper() == "NEW3":
@@ -324,7 +346,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if is_amlf_method(method_name) and opt.use_lfdb:
+    if is_clean_anchor_method(method_name) and opt.use_lfdb:
+        loss_item = ["id", "clean_cons", "mask"]
+    elif is_amlf_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "con", "mask"]
         if use_cosine_local_head(method_name):
             loss_item.insert(1, "supcon")
@@ -450,6 +474,11 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "is_snrboost": is_snrboost_method(method_name),
             "snrboost_low_prob": opt.snrboost_low_prob,
             "snrboost_low_max": opt.snrboost_low_max,
+            "is_clean_anchor": is_clean_anchor_method(method_name),
+            "clean_cons_weight": opt.clean_cons_weight,
+            "noisy_id_weight": opt.noisy_id_weight,
+            "low_snr_start_epoch": opt.low_snr_start_epoch,
+            "very_low_snr_start_epoch": opt.very_low_snr_start_epoch,
             "use_rest_adv": use_rest_adversary(method_name),
             "use_orth": use_orthogonal_disentangle(method_name),
             "use_rest_projector": use_rest_projector(method_name),
@@ -460,6 +489,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "use_cosine_head": use_cosine_local_head(method_name),
             "manual_local_loss": (
                 opt.manual_local_loss
+                or is_clean_anchor_method(method_name)
                 or is_amlf_method(method_name)
                 or use_orthogonal_disentangle(method_name)
                 or use_rest_adversary(method_name)
