@@ -289,7 +289,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     manual_local_loss=False, grad_clip=5.0,
                     ema_decay=0.996, ema_start_epoch=1,
                     teacher_run_root="", teacher_checkpoint="best",
-                    restoration_only=False):
+                    restoration_only=False, selective_encoder_finetune=False,
+                    encoder_adapt_lr=1e-5):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -371,6 +372,21 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         action="store_false",
         dest="restoration_only",
     )
+    parser.add_argument(
+        "--selective_encoder_finetune",
+        action="store_true",
+        default=selective_encoder_finetune,
+    )
+    parser.add_argument(
+        "--freeze_encoder",
+        action="store_false",
+        dest="selective_encoder_finetune",
+    )
+    parser.add_argument(
+        "--encoder_adapt_lr",
+        type=float,
+        default=encoder_adapt_lr,
+    )
     parser.add_argument("--snr_levels", type=float, nargs="+", default=snr_levels or [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0])
     explicit_tsla_conf = tsla_conf is not None
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
@@ -399,6 +415,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         raise ValueError("ema_decay must satisfy 0 <= ema_decay < 1")
     if opt.ema_start_epoch < 0:
         raise ValueError("ema_start_epoch must be non-negative")
+    if opt.encoder_adapt_lr <= 0:
+        raise ValueError("encoder_adapt_lr must be positive")
 
     method_name = opt.method_name.strip()
     if method_name.upper() == "NEW3":
@@ -560,6 +578,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "teacher_run_root": opt.teacher_run_root,
             "teacher_checkpoint": opt.teacher_checkpoint,
             "restoration_only": opt.restoration_only,
+            "selective_encoder_finetune": opt.selective_encoder_finetune,
+            "encoder_adapt_lr": opt.encoder_adapt_lr,
             "clean_cons_weight": opt.clean_cons_weight,
             "noisy_id_weight": opt.noisy_id_weight,
             "low_snr_start_epoch": opt.low_snr_start_epoch,

@@ -126,7 +126,18 @@ def _prepare_teacher(module):
         parameter.requires_grad_(False)
 
 
-def _configure_restoration_only(encoder, lfdb):
+def _get_encoder_adaptation_modules(encoder):
+    if not all(hasattr(encoder, name) for name in ("fusion", "encoder", "norm")):
+        raise ValueError(
+            "Selective encoder fine-tuning currently requires MSFTFNet."
+        )
+    layers = getattr(encoder.encoder, "layers", None)
+    if layers is None or len(layers) == 0:
+        raise ValueError("MSFTFNet does not expose a trainable Transformer layer.")
+    return [encoder.fusion, layers[-1], encoder.norm]
+
+
+def _configure_restoration_only(encoder, lfdb, selective_encoder_finetune=False):
     if lfdb is None or getattr(lfdb, "feature_restorer", None) is None:
         raise ValueError("Restoration-only training requires a feature restorer.")
     for parameter in encoder.parameters():
@@ -135,6 +146,13 @@ def _configure_restoration_only(encoder, lfdb):
         parameter.requires_grad_(False)
     for parameter in lfdb.feature_restorer.parameters():
         parameter.requires_grad_(True)
+    adaptation_modules = []
+    if selective_encoder_finetune:
+        adaptation_modules = _get_encoder_adaptation_modules(encoder)
+        for module in adaptation_modules:
+            for parameter in module.parameters():
+                parameter.requires_grad_(True)
+    return adaptation_modules
 
 
 def _load_fixed_teacher_source(config, encoder, lfdb, device, logger):
@@ -605,6 +623,9 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
         if lfdb is not None:
             lfdb.eval()
             lfdb.feature_restorer.train()
+        if config["lfdb"].get("selective_encoder_finetune", False):
+            for module in _get_encoder_adaptation_modules(encoder):
+                module.train()
     _prepare_teacher(teacher_encoder)
     _prepare_teacher(teacher_lfdb)
 
@@ -613,7 +634,14 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
     split_name = "Train" if training else "Val"
 
     if training:
-        logger.info(f"==> lr = {optimizers[0].param_groups[0]['lr']}")
+        learning_rates = [
+            group["lr"]
+            for optimizer in optimizers
+            for group in optimizer.param_groups
+        ]
+        logger.info(
+            "==> lr = " + ", ".join(str(value) for value in learning_rates)
+        )
 
     progress = tqdm(dataloader, desc=f"{split_name} epoch {epoch + 1}/{config['epoch']}")
     grad_context = torch.enable_grad() if training else torch.no_grad()
@@ -857,6 +885,7 @@ def pretext(config=None):
 
     teacher_encoder = None
     teacher_lfdb = None
+    encoder_adaptation_modules = []
     if config["lfdb"].get("use_feature_restorer", False):
         if lfdb is None:
             raise ValueError("Feature restoration requires the local fingerprint module.")
@@ -869,27 +898,61 @@ def pretext(config=None):
         _prepare_teacher(teacher_encoder)
         _prepare_teacher(teacher_lfdb)
         if config["lfdb"].get("restoration_only", False):
-            _configure_restoration_only(encoder, lfdb)
+            encoder_adaptation_modules = _configure_restoration_only(
+                encoder,
+                lfdb,
+                config["lfdb"].get("selective_encoder_finetune", False),
+            )
 
     cls = torch.nn.CrossEntropyLoss()
     mml = create_model(config["mml"]["root"], beta=config["mml"]["beta"])
     mtl = create_model(config["mtl"]["root"], num=config["mtl"]["num"]).to(device)
 
+    optimizer_config = config["optimizer"]
     if config["lfdb"].get("restoration_only", False):
-        trainable_modules = [lfdb.feature_restorer]
+        parameter_groups = [{
+            "params": list(lfdb.feature_restorer.parameters()),
+            "lr": optimizer_config["lr"],
+        }]
+        if encoder_adaptation_modules:
+            adaptation_parameters = [
+                parameter
+                for module in encoder_adaptation_modules
+                for parameter in module.parameters()
+            ]
+            parameter_groups.append({
+                "params": adaptation_parameters,
+                "lr": config["lfdb"]["encoder_adapt_lr"],
+            })
+            logger.info(
+                "==> Selective encoder fine-tuning: fusion gate, final "
+                "Transformer layer, and output normalization."
+            )
+            logger.info(
+                "==> Trainable parameters: restorer="
+                f"{sum(parameter.numel() for parameter in parameter_groups[0]['params'])}, "
+                "encoder_adapter="
+                f"{sum(parameter.numel() for parameter in adaptation_parameters)}."
+            )
+        optimizers = ListApply([
+            AdamW(
+                parameter_groups,
+                lr=optimizer_config["lr"],
+                weight_decay=optimizer_config["weight_decay"],
+            )
+        ])
     else:
         trainable_modules = [encoder, rot_classifier, mixed_classifier, mtl]
         if lfdb is not None:
             trainable_modules.append(lfdb)
-    optimizer_config = config["optimizer"]
-    optimizers = ListApply([
-        AdamW(
-            module.parameters(),
-            lr=optimizer_config["lr"],
-            weight_decay=optimizer_config["weight_decay"],
-        )
-        for module in trainable_modules
-    ])
+        optimizers = ListApply([
+            AdamW(
+                module.parameters(),
+                lr=optimizer_config["lr"],
+                weight_decay=optimizer_config["weight_decay"],
+            )
+            for module in trainable_modules
+        ])
     schedulers = ListApply([
         StepLR(
             optimizer,
