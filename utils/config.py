@@ -77,6 +77,7 @@ model_path_dict = {
     "ResNet18": os.path.join(PROJECT_ROOT, "models", "ResNet18Feature.py"),
     "CVTSLANet": os.path.join(PROJECT_ROOT, "models", "CVTSLANetFeature.py"),
     "MSFTFNet": os.path.join(PROJECT_ROOT, "models", "MSFTFNetFeature.py"),
+    "MSFTFNet-PQ": os.path.join(PROJECT_ROOT, "models", "MSFTFNetPQFeature.py"),
     "SAFNet": os.path.join(PROJECT_ROOT, "models", "SAFNetFeature.py"),
     "CVTSLANet-Shallow": os.path.join(PROJECT_ROOT, "models", "SCVTSLANet.py"),
     "CVTSLANet-Deep": os.path.join(PROJECT_ROOT, "models", "DCVTSLANet.py"),
