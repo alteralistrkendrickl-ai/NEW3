@@ -22,6 +22,44 @@ class CosineClassifier(nn.Module):
         return self.scale * F.linear(x, weight)
 
 
+class FeatureRestorationBlock(nn.Module):
+    """Recover weak local structure with an identity-initialized residual path."""
+
+    def __init__(self, channels, hidden_channels):
+        super().__init__()
+        hidden_channels = max(int(hidden_channels), 16)
+        self.pre_norm = nn.GroupNorm(1, channels)
+        self.residual = nn.Sequential(
+            nn.Conv1d(
+                channels,
+                channels,
+                kernel_size=5,
+                padding=2,
+                groups=channels,
+            ),
+            nn.GELU(),
+            nn.Conv1d(channels, hidden_channels, kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_channels, channels, kernel_size=1),
+        )
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Conv1d(channels, hidden_channels, kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_channels, channels, kernel_size=1),
+            nn.Sigmoid(),
+        )
+
+        final_projection = self.residual[-1]
+        nn.init.zeros_(final_projection.weight)
+        nn.init.zeros_(final_projection.bias)
+
+    def forward(self, feature_map):
+        residual = self.residual(self.pre_norm(feature_map))
+        gate = self.gate(feature_map)
+        return feature_map + gate * residual, residual, gate
+
+
 class LocalFingerprintMNet(nn.Module):
     """Local channel-time fingerprint selection with environment adversarial head."""
 
@@ -43,6 +81,7 @@ class LocalFingerprintMNet(nn.Module):
         use_global_head=False,
         use_cosine_head=False,
         cosine_scale=16.0,
+        use_feature_restorer=False,
     ):
         super().__init__()
         if fusion_mode not in {"fingerprint", "concat"}:
@@ -58,8 +97,13 @@ class LocalFingerprintMNet(nn.Module):
         self.use_multiscale = use_multiscale
         self.use_global_head = use_global_head
         self.use_cosine_head = use_cosine_head
+        self.use_feature_restorer = use_feature_restorer
         id_dim = in_channels * 2 if fusion_mode == "concat" else in_channels
         mid_channels = max(hidden_channels // 2, 16)
+        self.feature_restorer = (
+            FeatureRestorationBlock(in_channels, hidden_channels)
+            if use_feature_restorer else None
+        )
         self.mnet = nn.Sequential(
             nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1),
             nn.BatchNorm1d(hidden_channels),
@@ -175,7 +219,15 @@ class LocalFingerprintMNet(nn.Module):
         return output
 
     def forward(self, features, return_all=False):
-        feature_map = self._ensure_map(features)
+        raw_feature_map = self._ensure_map(features)
+        restoration_delta = None
+        restoration_gate = None
+        if self.feature_restorer is not None:
+            feature_map, restoration_delta, restoration_gate = self.feature_restorer(
+                raw_feature_map
+            )
+        else:
+            feature_map = raw_feature_map
         mask = self.mnet(feature_map)
         h_avg = feature_map.mean(dim=-1)
         fingerprint, scale_gate = self.multiscale_fingerprint(feature_map, mask)
@@ -201,7 +253,10 @@ class LocalFingerprintMNet(nn.Module):
         if not return_all:
             return fingerprint, mask, env_logits
         return {
+            "raw_feature_map": raw_feature_map,
             "feature_map": feature_map,
+            "restoration_delta": restoration_delta,
+            "restoration_gate": restoration_gate,
             "h_avg": h_avg,
             "fingerprint": fingerprint,
             "z_rest": rest,

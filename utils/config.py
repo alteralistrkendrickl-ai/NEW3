@@ -180,6 +180,13 @@ def is_clean_anchor_v3_method(method_name):
     return "cleananchorv3" in name or "clean_anchor_v3" in name
 
 
+def use_ema_restoration(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "emarestore" in name or "ema_restore" in name
+
+
 def uses_temporal_encoder_config(encoder_name):
     if encoder_name is None:
         return False
@@ -265,7 +272,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     snrboost_low_prob=0.65, snrboost_low_max=0.0,
                     clean_cons_weight=0.2, noisy_id_weight=0.5,
                     low_snr_start_epoch=20, very_low_snr_start_epoch=60,
-                    manual_local_loss=False, grad_clip=5.0):
+                    manual_local_loss=False, grad_clip=5.0,
+                    ema_decay=0.996, ema_start_epoch=1):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -329,6 +337,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--manual_local_loss", action="store_true", default=manual_local_loss)
     parser.add_argument("--auto_local_loss", action="store_false", dest="manual_local_loss")
     parser.add_argument("--grad_clip", type=float, default=grad_clip)
+    parser.add_argument("--ema_decay", type=float, default=ema_decay)
+    parser.add_argument("--ema_start_epoch", type=int, default=ema_start_epoch)
     parser.add_argument("--snr_levels", type=float, nargs="+", default=snr_levels or [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0])
     explicit_tsla_conf = tsla_conf is not None
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
@@ -353,6 +363,10 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "low-SNR curriculum epochs must satisfy 0 <= low_snr_start_epoch "
             "<= very_low_snr_start_epoch"
         )
+    if not 0.0 <= opt.ema_decay < 1.0:
+        raise ValueError("ema_decay must satisfy 0 <= ema_decay < 1")
+    if opt.ema_start_epoch < 0:
+        raise ValueError("ema_start_epoch must be non-negative")
 
     method_name = opt.method_name.strip()
     if method_name.upper() == "NEW3":
@@ -366,7 +380,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if is_clean_anchor_method(method_name) and opt.use_lfdb:
+    if use_ema_restoration(method_name) and opt.use_lfdb:
+        loss_item = ["id", "clean_cons"]
+    elif is_clean_anchor_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "clean_cons", "mask"]
     elif is_amlf_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "con", "mask"]
@@ -497,6 +513,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "is_clean_anchor": is_clean_anchor_method(method_name),
             "is_clean_anchor_v2": is_clean_anchor_v2_method(method_name),
             "is_clean_anchor_v3": is_clean_anchor_v3_method(method_name),
+            "use_ema_restoration": use_ema_restoration(method_name),
+            "ema_decay": opt.ema_decay,
+            "ema_start_epoch": opt.ema_start_epoch,
             "clean_cons_weight": opt.clean_cons_weight,
             "noisy_id_weight": opt.noisy_id_weight,
             "low_snr_start_epoch": opt.low_snr_start_epoch,

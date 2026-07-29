@@ -117,8 +117,36 @@ def _supervised_contrastive_loss(features, labels, temperature=0.2):
     return loss[valid].mean()
 
 
+def _prepare_teacher(module):
+    if module is None:
+        return
+    module.eval()
+    for parameter in module.parameters():
+        parameter.requires_grad_(False)
+
+
+@torch.no_grad()
+def _ema_update_module(teacher, student, decay):
+    if teacher is None or student is None:
+        return
+    for teacher_parameter, student_parameter in zip(
+        teacher.parameters(), student.parameters()
+    ):
+        teacher_parameter.mul_(decay).add_(
+            student_parameter.detach(), alpha=1.0 - decay
+        )
+    for teacher_buffer, student_buffer in zip(teacher.buffers(), student.buffers()):
+        if teacher_buffer.is_floating_point():
+            teacher_buffer.mul_(decay).add_(
+                student_buffer.detach(), alpha=1.0 - decay
+            )
+        else:
+            teacher_buffer.copy_(student_buffer)
+
+
 def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
-             cls, mml, mtl, lfdb=None, training=False, epoch=0):
+             cls, mml, mtl, lfdb=None, teacher_encoder=None, teacher_lfdb=None,
+             training=False, epoch=0):
     """Run all configured pretext tasks for one batch."""
     signals, rot_labels, device_labels = inputs
     batch_size, rot_num = signals.shape[:2]
@@ -136,6 +164,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
     lfdb_outputs = None
     channel_outputs = None
     clean_output = None
+    teacher_clean_output = None
     losses = {}
     metrics = {"rot_acc": 0.0, "sei_acc": 0.0, "mixed_acc": 0.0}
     local_method = is_local_fingerprint_method(config.get("method_name"))
@@ -238,6 +267,25 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             clean_output = lfdb(clean_features, return_all=True)
         return clean_output
 
+    def get_teacher_clean_output():
+        nonlocal teacher_clean_output
+        ema_start_epoch = config["lfdb"].get("ema_start_epoch", 1)
+        if (
+            teacher_encoder is None
+            or teacher_lfdb is None
+            or epoch < ema_start_epoch
+        ):
+            return get_clean_output()
+        if teacher_clean_output is None:
+            with torch.no_grad():
+                teacher_features = _forward_feature_map(
+                    teacher_encoder, mixed_inputs
+                )
+                teacher_clean_output = teacher_lfdb(
+                    teacher_features, return_all=True
+                )
+        return teacher_clean_output
+
     for loss_name in config["mtl"]["item"]:
         if loss_name == "id":
             channel = get_channel_outputs()
@@ -288,7 +336,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
 
         elif loss_name == "clean_cons":
             channel = get_channel_outputs()
-            clean_features = get_clean_output()["id_features"].detach()
+            clean_features = get_teacher_clean_output()["id_features"].detach()
             consistency = 0.5 * (
                 1.0 - F.cosine_similarity(
                     channel["out_1"]["id_features"], clean_features, dim=1
@@ -495,13 +543,16 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
 
 def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
                rot_classifier, mixed_classifier, cls, mml, mtl, lfdb=None,
-               optimizers=None, schedulers=None):
+               optimizers=None, schedulers=None, teacher_encoder=None,
+               teacher_lfdb=None):
     training = optimizers is not None
     modules = [encoder, rot_classifier, mixed_classifier, mtl]
     if lfdb is not None:
         modules.append(lfdb)
     for module in modules:
         module.train(training)
+    _prepare_teacher(teacher_encoder)
+    _prepare_teacher(teacher_lfdb)
 
     metric_sums = {"rot_acc": 0.0, "sei_acc": 0.0, "mixed_acc": 0.0}
     loss_sums = [0.0] * (config["mtl"]["num"] + 1)
@@ -516,7 +567,8 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
         for inputs in progress:
             loss_items, metrics = run_step(
                 config, inputs, device, encoder, rot_classifier, mixed_classifier,
-                cls, mml, mtl, lfdb, training=training, epoch=epoch
+                cls, mml, mtl, lfdb, teacher_encoder, teacher_lfdb,
+                training=training, epoch=epoch
             )
             if training:
                 optimizers.zero_grad()
@@ -527,6 +579,10 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
                         config["lfdb"]["grad_clip"],
                     )
                 optimizers.step()
+                if teacher_encoder is not None and teacher_lfdb is not None:
+                    decay = config["lfdb"].get("ema_decay", 0.996)
+                    _ema_update_module(teacher_encoder, encoder, decay)
+                    _ema_update_module(teacher_lfdb, lfdb, decay)
 
             for name, value in metrics.items():
                 metric_sums[name] += value
@@ -555,7 +611,8 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
 
 
 def _save_checkpoint(path, epoch, config, best_record, encoder, rot_classifier,
-                     mixed_classifier, mtl, lfdb, optimizers, schedulers):
+                     mixed_classifier, mtl, lfdb, optimizers, schedulers,
+                     teacher_encoder=None, teacher_lfdb=None):
     torch.save({
         "epoch": epoch,
         "config": config,
@@ -565,13 +622,20 @@ def _save_checkpoint(path, epoch, config, best_record, encoder, rot_classifier,
         "mixed_classifier": mixed_classifier.state_dict(),
         "mtl": mtl.state_dict(),
         "lfdb": lfdb.state_dict() if lfdb is not None else None,
+        "teacher_encoder": (
+            teacher_encoder.state_dict() if teacher_encoder is not None else None
+        ),
+        "teacher_lfdb": (
+            teacher_lfdb.state_dict() if teacher_lfdb is not None else None
+        ),
         "optimizers": optimizers.state_dict(),
         "schedulers": schedulers.state_dict(),
     }, path)
 
 
 def _load_checkpoint(path, device, encoder, rot_classifier, mixed_classifier,
-                     mtl, lfdb, optimizers, schedulers):
+                     mtl, lfdb, optimizers, schedulers, teacher_encoder=None,
+                     teacher_lfdb=None):
     checkpoint = torch.load(path, map_location=device)
     encoder.load_state_dict(checkpoint["encoder"])
     rot_classifier.load_state_dict(checkpoint["rot_classifier"])
@@ -579,6 +643,14 @@ def _load_checkpoint(path, device, encoder, rot_classifier, mixed_classifier,
     mtl.load_state_dict(checkpoint["mtl"])
     if lfdb is not None and checkpoint.get("lfdb") is not None:
         lfdb.load_state_dict(checkpoint["lfdb"])
+    if teacher_encoder is not None:
+        teacher_encoder.load_state_dict(
+            checkpoint.get("teacher_encoder") or checkpoint["encoder"]
+        )
+    if teacher_lfdb is not None:
+        teacher_lfdb.load_state_dict(
+            checkpoint.get("teacher_lfdb") or checkpoint["lfdb"]
+        )
     if checkpoint.get("optimizers") is not None:
         optimizers.load_state_dict(checkpoint["optimizers"])
     if checkpoint.get("schedulers") is not None:
@@ -588,7 +660,8 @@ def _load_checkpoint(path, device, encoder, rot_classifier, mixed_classifier,
 
 def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
                   encoder, rot_classifier, mixed_classifier, cls, mml, mtl,
-                  lfdb, optimizers, schedulers, checkpoint=None):
+                  lfdb, optimizers, schedulers, checkpoint=None,
+                  teacher_encoder=None, teacher_lfdb=None):
     best_record = (
         deepcopy(checkpoint["best_record"])
         if checkpoint is not None and "best_record" in checkpoint
@@ -603,11 +676,12 @@ def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
         _run_epoch(
             logger, writer, config, epoch, train_dl, device, encoder,
             rot_classifier, mixed_classifier, cls, mml, mtl, lfdb,
-            optimizers, schedulers
+            optimizers, schedulers, teacher_encoder, teacher_lfdb
         )
         metrics, losses = _run_epoch(
             logger, writer, config, epoch, val_dl, device, encoder,
-            rot_classifier, mixed_classifier, cls, mml, mtl, lfdb
+            rot_classifier, mixed_classifier, cls, mml, mtl, lfdb,
+            teacher_encoder=teacher_encoder, teacher_lfdb=teacher_lfdb
         )
 
         current_score = metrics.get("sei_acc", 0.0)
@@ -630,7 +704,8 @@ def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
             checkpoint_path = os.path.join(config["exp_path"], "checkpoint.pth")
             _save_checkpoint(
                 checkpoint_path, epoch, config, best_record, encoder,
-                rot_classifier, mixed_classifier, mtl, lfdb, optimizers, schedulers
+                rot_classifier, mixed_classifier, mtl, lfdb, optimizers, schedulers,
+                teacher_encoder, teacher_lfdb
             )
             shutil.copy2(checkpoint_path, os.path.join(config["save_path"], "checkpoint.pth"))
 
@@ -710,6 +785,9 @@ def pretext(config=None):
                 use_global_head=config["lfdb"].get("use_global_head", False),
                 use_cosine_head=config["lfdb"].get("use_cosine_head", False),
                 cosine_scale=config["lfdb"].get("cosine_scale", 16.0),
+                use_feature_restorer=config["lfdb"].get(
+                    "use_ema_restoration", False
+                ),
             ).to(device)
         else:
             lfdb = LightweightLFDB(
@@ -718,6 +796,16 @@ def pretext(config=None):
                 snr_classes=config["lfdb"]["snr_classes"],
                 fading_classes=config["lfdb"]["fading_classes"],
             ).to(device)
+
+    teacher_encoder = None
+    teacher_lfdb = None
+    if config["lfdb"].get("use_ema_restoration", False):
+        if lfdb is None:
+            raise ValueError("EMA restoration requires the local fingerprint module.")
+        teacher_encoder = deepcopy(encoder)
+        teacher_lfdb = deepcopy(lfdb)
+        _prepare_teacher(teacher_encoder)
+        _prepare_teacher(teacher_lfdb)
 
     cls = torch.nn.CrossEntropyLoss()
     mml = create_model(config["mml"]["root"], beta=config["mml"]["beta"])
@@ -753,7 +841,7 @@ def pretext(config=None):
             raise FileNotFoundError(f"Checkpoint not found: {resume_path}")
         checkpoint = _load_checkpoint(
             resume_path, device, encoder, rot_classifier, mixed_classifier,
-            mtl, lfdb, optimizers, schedulers
+            mtl, lfdb, optimizers, schedulers, teacher_encoder, teacher_lfdb
         )
         config["start_epoch"] = checkpoint["epoch"] + 1
         logger.info(f"==> Resumed checkpoint: {resume_path}")
@@ -764,7 +852,7 @@ def pretext(config=None):
     train_and_val(
         record_time, logger, writer, config, train_dataloader, val_dataloader,
         device, encoder, rot_classifier, mixed_classifier, cls, mml, mtl,
-        lfdb, optimizers, schedulers, checkpoint
+        lfdb, optimizers, schedulers, checkpoint, teacher_encoder, teacher_lfdb
     )
     writer.close()
 
