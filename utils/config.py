@@ -187,6 +187,20 @@ def use_ema_restoration(method_name):
     return "emarestore" in name or "ema_restore" in name
 
 
+def use_fixed_teacher_restoration(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "fixedrestore" in name or "fixed_restore" in name
+
+
+def use_feature_restoration(method_name):
+    return (
+        use_ema_restoration(method_name)
+        or use_fixed_teacher_restoration(method_name)
+    )
+
+
 def uses_temporal_encoder_config(encoder_name):
     if encoder_name is None:
         return False
@@ -273,7 +287,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     clean_cons_weight=0.2, noisy_id_weight=0.5,
                     low_snr_start_epoch=20, very_low_snr_start_epoch=60,
                     manual_local_loss=False, grad_clip=5.0,
-                    ema_decay=0.996, ema_start_epoch=1):
+                    ema_decay=0.996, ema_start_epoch=1,
+                    teacher_run_root="", teacher_checkpoint="best",
+                    restoration_only=False):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -339,6 +355,22 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--grad_clip", type=float, default=grad_clip)
     parser.add_argument("--ema_decay", type=float, default=ema_decay)
     parser.add_argument("--ema_start_epoch", type=int, default=ema_start_epoch)
+    parser.add_argument("--teacher_run_root", type=str, default=teacher_run_root)
+    parser.add_argument(
+        "--teacher_checkpoint",
+        choices=["best", "final"],
+        default=teacher_checkpoint,
+    )
+    parser.add_argument(
+        "--restoration_only",
+        action="store_true",
+        default=restoration_only,
+    )
+    parser.add_argument(
+        "--full_student_finetune",
+        action="store_false",
+        dest="restoration_only",
+    )
     parser.add_argument("--snr_levels", type=float, nargs="+", default=snr_levels or [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0])
     explicit_tsla_conf = tsla_conf is not None
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
@@ -380,7 +412,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if use_ema_restoration(method_name) and opt.use_lfdb:
+    if use_feature_restoration(method_name) and opt.use_lfdb:
         loss_item = ["id", "clean_cons"]
     elif is_clean_anchor_method(method_name) and opt.use_lfdb:
         loss_item = ["id", "clean_cons", "mask"]
@@ -513,9 +545,21 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "is_clean_anchor": is_clean_anchor_method(method_name),
             "is_clean_anchor_v2": is_clean_anchor_v2_method(method_name),
             "is_clean_anchor_v3": is_clean_anchor_v3_method(method_name),
+            "use_feature_restorer": use_feature_restoration(method_name),
             "use_ema_restoration": use_ema_restoration(method_name),
+            "use_fixed_teacher_restoration": use_fixed_teacher_restoration(
+                method_name
+            ),
+            "teacher_mode": (
+                "fixed"
+                if use_fixed_teacher_restoration(method_name)
+                else "ema" if use_ema_restoration(method_name) else "none"
+            ),
             "ema_decay": opt.ema_decay,
             "ema_start_epoch": opt.ema_start_epoch,
+            "teacher_run_root": opt.teacher_run_root,
+            "teacher_checkpoint": opt.teacher_checkpoint,
+            "restoration_only": opt.restoration_only,
             "clean_cons_weight": opt.clean_cons_weight,
             "noisy_id_weight": opt.noisy_id_weight,
             "low_snr_start_epoch": opt.low_snr_start_epoch,

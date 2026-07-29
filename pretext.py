@@ -25,6 +25,7 @@ from utils.utils import (
     accuracy,
     create_model,
     get_logger_and_writer,
+    load_encoder_weights,
     set_seed,
 )
 
@@ -123,6 +124,49 @@ def _prepare_teacher(module):
     module.eval()
     for parameter in module.parameters():
         parameter.requires_grad_(False)
+
+
+def _configure_restoration_only(encoder, lfdb):
+    if lfdb is None or getattr(lfdb, "feature_restorer", None) is None:
+        raise ValueError("Restoration-only training requires a feature restorer.")
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
+    for parameter in lfdb.parameters():
+        parameter.requires_grad_(False)
+    for parameter in lfdb.feature_restorer.parameters():
+        parameter.requires_grad_(True)
+
+
+def _load_fixed_teacher_source(config, encoder, lfdb, device, logger):
+    run_root = os.path.expanduser(config["lfdb"].get("teacher_run_root", ""))
+    checkpoint_name = config["lfdb"].get("teacher_checkpoint", "best")
+    if not run_root:
+        raise ValueError("Fixed-teacher restoration requires teacher_run_root.")
+
+    encoder_path = os.path.join(run_root, f"{checkpoint_name}_encoder.pth")
+    lfdb_path = os.path.join(run_root, f"{checkpoint_name}_lfdb.pth")
+    if not os.path.isfile(encoder_path) or not os.path.isfile(lfdb_path):
+        raise FileNotFoundError(
+            f"Fixed teacher weights not found: {encoder_path} / {lfdb_path}"
+        )
+
+    load_encoder_weights(encoder, encoder_path, device)
+    lfdb_state = torch.load(lfdb_path, map_location=device)
+    if isinstance(lfdb_state, dict) and "state_dict" in lfdb_state:
+        lfdb_state = lfdb_state["state_dict"]
+    incompatible = lfdb.load_state_dict(lfdb_state, strict=False)
+    invalid_missing = [
+        key
+        for key in incompatible.missing_keys
+        if not key.startswith("feature_restorer.")
+    ]
+    if invalid_missing or incompatible.unexpected_keys:
+        raise RuntimeError(
+            "Teacher LFDB is incompatible with the restoration model. "
+            f"Missing: {invalid_missing}; unexpected: "
+            f"{incompatible.unexpected_keys}"
+        )
+    logger.info(f"==> Loaded fixed teacher and student initialization from: {run_root}")
 
 
 @torch.no_grad()
@@ -269,11 +313,16 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
 
     def get_teacher_clean_output():
         nonlocal teacher_clean_output
-        ema_start_epoch = config["lfdb"].get("ema_start_epoch", 1)
+        teacher_mode = config["lfdb"].get("teacher_mode", "none")
+        teacher_start_epoch = (
+            0
+            if teacher_mode == "fixed"
+            else config["lfdb"].get("ema_start_epoch", 1)
+        )
         if (
             teacher_encoder is None
             or teacher_lfdb is None
-            or epoch < ema_start_epoch
+            or epoch < teacher_start_epoch
         ):
             return get_clean_output()
         if teacher_clean_output is None:
@@ -551,6 +600,11 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
         modules.append(lfdb)
     for module in modules:
         module.train(training)
+    if training and config["lfdb"].get("restoration_only", False):
+        encoder.eval()
+        if lfdb is not None:
+            lfdb.eval()
+            lfdb.feature_restorer.train()
     _prepare_teacher(teacher_encoder)
     _prepare_teacher(teacher_lfdb)
 
@@ -579,7 +633,11 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
                         config["lfdb"]["grad_clip"],
                     )
                 optimizers.step()
-                if teacher_encoder is not None and teacher_lfdb is not None:
+                if (
+                    teacher_encoder is not None
+                    and teacher_lfdb is not None
+                    and config["lfdb"].get("teacher_mode") == "ema"
+                ):
                     decay = config["lfdb"].get("ema_decay", 0.996)
                     _ema_update_module(teacher_encoder, encoder, decay)
                     _ema_update_module(teacher_lfdb, lfdb, decay)
@@ -786,7 +844,7 @@ def pretext(config=None):
                 use_cosine_head=config["lfdb"].get("use_cosine_head", False),
                 cosine_scale=config["lfdb"].get("cosine_scale", 16.0),
                 use_feature_restorer=config["lfdb"].get(
-                    "use_ema_restoration", False
+                    "use_feature_restorer", False
                 ),
             ).to(device)
         else:
@@ -799,21 +857,30 @@ def pretext(config=None):
 
     teacher_encoder = None
     teacher_lfdb = None
-    if config["lfdb"].get("use_ema_restoration", False):
+    if config["lfdb"].get("use_feature_restorer", False):
         if lfdb is None:
-            raise ValueError("EMA restoration requires the local fingerprint module.")
+            raise ValueError("Feature restoration requires the local fingerprint module.")
+        if config["lfdb"].get("teacher_mode") == "fixed":
+            _load_fixed_teacher_source(
+                config, encoder, lfdb, device, logger
+            )
         teacher_encoder = deepcopy(encoder)
         teacher_lfdb = deepcopy(lfdb)
         _prepare_teacher(teacher_encoder)
         _prepare_teacher(teacher_lfdb)
+        if config["lfdb"].get("restoration_only", False):
+            _configure_restoration_only(encoder, lfdb)
 
     cls = torch.nn.CrossEntropyLoss()
     mml = create_model(config["mml"]["root"], beta=config["mml"]["beta"])
     mtl = create_model(config["mtl"]["root"], num=config["mtl"]["num"]).to(device)
 
-    trainable_modules = [encoder, rot_classifier, mixed_classifier, mtl]
-    if lfdb is not None:
-        trainable_modules.append(lfdb)
+    if config["lfdb"].get("restoration_only", False):
+        trainable_modules = [lfdb.feature_restorer]
+    else:
+        trainable_modules = [encoder, rot_classifier, mixed_classifier, mtl]
+        if lfdb is not None:
+            trainable_modules.append(lfdb)
     optimizer_config = config["optimizer"]
     optimizers = ListApply([
         AdamW(

@@ -17,7 +17,7 @@ from utils.config import (
     use_orthogonal_disentangle,
     use_rest_adversary,
     use_rest_projector,
-    use_ema_restoration,
+    use_feature_restoration,
     uses_temporal_encoder_config,
 )
 from utils.feature_augmentation import (
@@ -127,7 +127,9 @@ def build_feature_extractor(config, device):
             use_multiscale=is_amlf_method(config.get("method_name")),
             use_global_head=use_global_local_head(config.get("method_name")),
             use_cosine_head=use_cosine_local_head(config.get("method_name")),
-            use_feature_restorer=use_ema_restoration(config.get("method_name")),
+            use_feature_restorer=use_feature_restoration(
+                config.get("method_name")
+            ),
         ).to(device)
     else:
         lfdb = LightweightLFDB(

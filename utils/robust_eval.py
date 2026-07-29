@@ -21,7 +21,7 @@ from utils.config import (
     use_rest_adversary,
     use_global_local_head,
     use_rest_projector,
-    use_ema_restoration,
+    use_feature_restoration,
     uses_temporal_encoder_config,
 )
 from utils.get_dataset import (
@@ -98,7 +98,7 @@ def load_robust_models(args, device):
             use_global_head=use_global_local_head(args.method_name),
             use_cosine_head=use_cosine_local_head(args.method_name),
             cosine_scale=getattr(args, "cosine_scale", 16.0),
-            use_feature_restorer=use_ema_restoration(args.method_name),
+            use_feature_restorer=use_feature_restoration(args.method_name),
         ).to(device)
         classifier = None
     else:
