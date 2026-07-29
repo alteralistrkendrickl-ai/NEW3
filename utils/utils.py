@@ -96,7 +96,19 @@ def load_encoder_weights(encoder, path, device):
         state = torch.load(path, map_location=device)
     if isinstance(state, dict) and "encoder" in state:
         state = state["encoder"]
-    encoder.load_state_dict(state)
+    incompatible = encoder.load_state_dict(state, strict=False)
+    allowed_missing_prefixes = ("tf_enhancer.",)
+    invalid_missing = [
+        key
+        for key in incompatible.missing_keys
+        if not key.startswith(allowed_missing_prefixes)
+    ]
+    if invalid_missing or incompatible.unexpected_keys:
+        raise RuntimeError(
+            "Encoder checkpoint is incompatible. "
+            f"Missing: {invalid_missing}; unexpected: "
+            f"{incompatible.unexpected_keys}"
+        )
     return encoder
 
 
@@ -233,5 +245,4 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res[0].item()
-
 

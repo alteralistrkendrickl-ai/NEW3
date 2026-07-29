@@ -56,6 +56,72 @@ class TimeFrequencyFusion(nn.Module):
         return fused
 
 
+class AdaptiveTFEnhancer(nn.Module):
+    """Apply signal-conditioned residual correction to time-frequency maps."""
+
+    def __init__(self, channels):
+        super().__init__()
+        hidden_channels = max(channels // 2, 16)
+        self.reliability = nn.Sequential(
+            nn.Linear(channels * 4, channels),
+            nn.GELU(),
+            nn.Linear(channels, 2),
+            nn.Sigmoid(),
+        )
+        self.time_residual = self._make_residual(channels, hidden_channels)
+        self.freq_residual = self._make_residual(channels, hidden_channels)
+        self._initialize_identity()
+
+    @staticmethod
+    def _make_residual(channels, hidden_channels):
+        return nn.Sequential(
+            nn.GroupNorm(1, channels),
+            nn.Conv1d(
+                channels,
+                channels,
+                kernel_size=5,
+                padding=2,
+                groups=channels,
+            ),
+            nn.GELU(),
+            nn.Conv1d(channels, hidden_channels, kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_channels, channels, kernel_size=1),
+        )
+
+    def _initialize_identity(self):
+        for branch in (self.time_residual, self.freq_residual):
+            projection = branch[-1]
+            nn.init.zeros_(projection.weight)
+            nn.init.zeros_(projection.bias)
+
+    @staticmethod
+    def _summary(feature_map):
+        return torch.cat(
+            [
+                feature_map.mean(dim=-1),
+                feature_map.std(dim=-1, unbiased=False),
+            ],
+            dim=1,
+        )
+
+    def forward(self, time_map, freq_map):
+        context = torch.cat(
+            [self._summary(time_map), self._summary(freq_map)],
+            dim=1,
+        )
+        reliability = self.reliability(context)
+        time_delta = self.time_residual(time_map)
+        freq_delta = self.freq_residual(freq_map)
+        enhanced_time = (
+            time_map + reliability[:, 0:1].unsqueeze(-1) * time_delta
+        )
+        enhanced_freq = (
+            freq_map + reliability[:, 1:2].unsqueeze(-1) * freq_delta
+        )
+        return enhanced_time, enhanced_freq, reliability
+
+
 class MSFTFNet(nn.Module):
     """Multi-scale time-frequency fingerprint encoder for IQ SEI signals."""
 
@@ -87,6 +153,7 @@ class MSFTFNet(nn.Module):
             MultiScaleTemporalBlock(emb_dim, dropout=dropout_rate * 0.5),
             nn.AdaptiveAvgPool1d(self.num_patches),
         )
+        self.tf_enhancer = AdaptiveTFEnhancer(emb_dim)
         self.fusion = TimeFrequencyFusion(emb_dim)
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, emb_dim))
         encoder_layer = nn.TransformerEncoderLayer(
@@ -128,14 +195,24 @@ class MSFTFNet(nn.Module):
         mixed_x[:, :, start_index:end_index] = x[batch_index, :, start_index:end_index].clone()
         return mixed_x, y, y[batch_index]
 
-    def forward_map(self, x):
+    def forward_stages(self, x):
         time_map = self.time_stem(x.float())
         freq_map = self.freq_stem(self._complex_spectrum(x))
+        time_map, freq_map, reliability = self.tf_enhancer(time_map, freq_map)
         feature_map = self.fusion(time_map, freq_map)
         tokens = feature_map.transpose(1, 2) + self.pos_embed
         tokens = self.encoder(tokens)
         tokens = self.norm(tokens)
-        return tokens.transpose(1, 2)
+        return {
+            "time_map": time_map,
+            "freq_map": freq_map,
+            "fused_map": feature_map,
+            "feature_map": tokens.transpose(1, 2),
+            "reliability": reliability,
+        }
+
+    def forward_map(self, x):
+        return self.forward_stages(x)["feature_map"]
 
     def _set_forward(self, x):
         feature_map = self.forward_map(x).transpose(1, 2)

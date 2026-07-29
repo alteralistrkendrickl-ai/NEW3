@@ -50,6 +50,30 @@ def snr_level_to_class(snr, levels=SNR_LEVELS):
     return torch.argmin(distances, dim=1).long()
 
 
+def random_awgn_level_view(signal, snr_levels=SNR_LEVELS):
+    """Create a position-aligned AWGN view from discrete SNR levels."""
+    if signal.ndim != 3 or signal.shape[1] != 2:
+        raise ValueError(
+            "AWGN level views expect IQ tensors shaped [batch, 2, length]"
+        )
+    if not snr_levels:
+        raise ValueError("snr_levels cannot be empty")
+    level_tensor = torch.as_tensor(
+        snr_levels,
+        device=signal.device,
+        dtype=signal.dtype,
+    )
+    snr_indices = torch.randint(
+        0,
+        level_tensor.numel(),
+        (signal.shape[0],),
+        device=signal.device,
+    )
+    noisy_signal = add_awgn(signal, level_tensor[snr_indices])
+    fading_labels = torch.zeros_like(snr_indices)
+    return noisy_signal, snr_indices.long(), fading_labels.long()
+
+
 def _complex_scale(signal, real, imag):
     i_part = signal[:, 0]
     q_part = signal[:, 1]

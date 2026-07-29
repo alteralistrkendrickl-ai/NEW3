@@ -11,7 +11,12 @@ from tqdm import tqdm
 
 from models.LocalFingerprintMNet import LocalFingerprintMNet
 from models.lfdb import LightweightLFDB
-from utils.channel_aug import add_random_awgn, random_channel_view, random_joint_interference_view
+from utils.channel_aug import (
+    add_random_awgn,
+    random_awgn_level_view,
+    random_channel_view,
+    random_joint_interference_view,
+)
 from utils.config import (
     is_joint_interference_method,
     is_local_fingerprint_method,
@@ -118,6 +123,24 @@ def _supervised_contrastive_loss(features, labels, temperature=0.2):
     return loss[valid].mean()
 
 
+def _normalized_map_distance(student_map, teacher_map):
+    student_map = F.normalize(student_map, dim=1)
+    teacher_map = F.normalize(teacher_map.detach(), dim=1)
+    return (1.0 - (student_map * teacher_map).sum(dim=1)).mean()
+
+
+def _multilevel_curriculum_levels(config, epoch, training):
+    if not training:
+        return (-10.0, -5.0, 0.0)
+    low_start = config["lfdb"].get("low_snr_start_epoch", 10)
+    very_low_start = config["lfdb"].get("very_low_snr_start_epoch", 30)
+    if epoch < low_start:
+        return (0.0, -5.0)
+    if epoch < very_low_start:
+        return (-5.0,) * 7 + (-10.0,) * 3
+    return (-10.0,) * 6 + (-5.0,) * 3 + (0.0,)
+
+
 def _prepare_teacher(module):
     if module is None:
         return
@@ -145,6 +168,32 @@ def _configure_restoration_only(encoder, lfdb, selective_encoder_finetune=False)
     for parameter in lfdb.parameters():
         parameter.requires_grad_(False)
     for parameter in lfdb.feature_restorer.parameters():
+        parameter.requires_grad_(True)
+    adaptation_modules = []
+    if selective_encoder_finetune:
+        adaptation_modules = _get_encoder_adaptation_modules(encoder)
+        for module in adaptation_modules:
+            for parameter in module.parameters():
+                parameter.requires_grad_(True)
+    return adaptation_modules
+
+
+def _configure_multilevel_restoration(
+    encoder,
+    lfdb,
+    selective_encoder_finetune=False,
+):
+    if not hasattr(encoder, "tf_enhancer") or not hasattr(
+        encoder, "forward_stages"
+    ):
+        raise ValueError(
+            "Multi-level restoration currently requires MSFTFNet."
+        )
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
+    for parameter in lfdb.parameters():
+        parameter.requires_grad_(False)
+    for parameter in encoder.tf_enhancer.parameters():
         parameter.requires_grad_(True)
     adaptation_modules = []
     if selective_encoder_finetune:
@@ -227,6 +276,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
     channel_outputs = None
     clean_output = None
     teacher_clean_output = None
+    teacher_clean_stages = None
     losses = {}
     metrics = {"rot_acc": 0.0, "sei_acc": 0.0, "mixed_acc": 0.0}
     local_method = is_local_fingerprint_method(config.get("method_name"))
@@ -254,7 +304,13 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             snr_levels = config["augmentation"].get("snr_levels")
             view_1_levels = snr_levels
             view_2_levels = snr_levels
-            if config["lfdb"].get("is_clean_anchor_v2", False):
+            if config["lfdb"].get("use_multilevel_restoration", False):
+                curriculum_levels = _multilevel_curriculum_levels(
+                    config, epoch, training
+                )
+                view_1_levels = curriculum_levels
+                view_2_levels = curriculum_levels
+            elif config["lfdb"].get("is_clean_anchor_v2", False):
                 low_start = config["lfdb"].get("low_snr_start_epoch", 20)
                 very_low_start = config["lfdb"].get("very_low_snr_start_epoch", 60)
                 view_1_levels = tuple(level for level in snr_levels if level >= 0.0)
@@ -279,22 +335,40 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 view_2_levels = view_1_levels
             if not view_1_levels or not view_2_levels:
                 raise ValueError("The configured SNR levels do not support the active curriculum stage.")
-            view_1, snr_1, fading_1 = random_joint_interference_view(
-                mixed_inputs,
-                view_1_levels,
-                enable_awgn=config["augmentation"]["awgn_enable"],
-                low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
-                if config["lfdb"].get("is_snrboost", False) else 0.0,
-                low_snr_max=config["lfdb"].get("snrboost_low_max", 0.0),
-            )
-            view_2, snr_2, fading_2 = random_joint_interference_view(
-                mixed_inputs,
-                view_2_levels,
-                enable_awgn=config["augmentation"]["awgn_enable"],
-                low_snr_prob=config["lfdb"].get("snrboost_low_prob", 0.0)
-                if config["lfdb"].get("is_snrboost", False) else 0.0,
-                low_snr_max=config["lfdb"].get("snrboost_low_max", 0.0),
-            )
+            if config["lfdb"].get("use_multilevel_restoration", False):
+                view_1, snr_1, fading_1 = random_awgn_level_view(
+                    mixed_inputs,
+                    view_1_levels,
+                )
+                view_2, snr_2, fading_2 = random_awgn_level_view(
+                    mixed_inputs,
+                    view_2_levels,
+                )
+            else:
+                view_1, snr_1, fading_1 = random_joint_interference_view(
+                    mixed_inputs,
+                    view_1_levels,
+                    enable_awgn=config["augmentation"]["awgn_enable"],
+                    low_snr_prob=config["lfdb"].get(
+                        "snrboost_low_prob", 0.0
+                    )
+                    if config["lfdb"].get("is_snrboost", False) else 0.0,
+                    low_snr_max=config["lfdb"].get(
+                        "snrboost_low_max", 0.0
+                    ),
+                )
+                view_2, snr_2, fading_2 = random_joint_interference_view(
+                    mixed_inputs,
+                    view_2_levels,
+                    enable_awgn=config["augmentation"]["awgn_enable"],
+                    low_snr_prob=config["lfdb"].get(
+                        "snrboost_low_prob", 0.0
+                    )
+                    if config["lfdb"].get("is_snrboost", False) else 0.0,
+                    low_snr_max=config["lfdb"].get(
+                        "snrboost_low_max", 0.0
+                    ),
+                )
         else:
             view_1, snr_1, fading_1 = random_channel_view(
                 mixed_inputs, config["augmentation"]["awgn_snr_range"],
@@ -304,9 +378,21 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 mixed_inputs, config["augmentation"]["awgn_snr_range"],
                 enable_awgn=config["augmentation"]["awgn_enable"]
             )
+        stages_1 = None
+        stages_2 = None
         if local_method:
-            out_1 = lfdb(_forward_feature_map(encoder, view_1), return_all=True)
-            out_2 = lfdb(_forward_feature_map(encoder, view_2), return_all=True)
+            if config["lfdb"].get("use_multilevel_restoration", False):
+                stages_1 = encoder.forward_stages(view_1)
+                stages_2 = encoder.forward_stages(view_2)
+                out_1 = lfdb(stages_1["feature_map"], return_all=True)
+                out_2 = lfdb(stages_2["feature_map"], return_all=True)
+            else:
+                out_1 = lfdb(
+                    _forward_feature_map(encoder, view_1), return_all=True
+                )
+                out_2 = lfdb(
+                    _forward_feature_map(encoder, view_2), return_all=True
+                )
         else:
             out_1 = lfdb(_forward_features(encoder, view_1), return_all=True)
             out_2 = lfdb(_forward_features(encoder, view_2), return_all=True)
@@ -319,6 +405,8 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             "fading": torch.cat([fading_1, fading_2]).long(),
             "env": torch.cat([env_1, env_2]).long(),
             "device_labels": torch.cat([device_labels, device_labels]).long(),
+            "stages_1": stages_1,
+            "stages_2": stages_2,
         }
         return channel_outputs
 
@@ -352,6 +440,21 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                     teacher_features, return_all=True
                 )
         return teacher_clean_output
+
+    def get_teacher_clean_stages():
+        nonlocal teacher_clean_stages
+        if teacher_encoder is None or not hasattr(
+            teacher_encoder, "forward_stages"
+        ):
+            raise ValueError(
+                "Multi-level restoration requires a fixed MSFTFNet teacher."
+            )
+        if teacher_clean_stages is None:
+            with torch.no_grad():
+                teacher_clean_stages = teacher_encoder.forward_stages(
+                    mixed_inputs
+                )
+        return teacher_clean_stages
 
     for loss_name in config["mtl"]["item"]:
         if loss_name == "id":
@@ -413,6 +516,29 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 ).mean()
             )
             losses[loss_name] = config["lfdb"].get("clean_cons_weight", 0.2) * consistency
+
+        elif loss_name == "multi_restore":
+            channel = get_channel_outputs()
+            teacher_stages = get_teacher_clean_stages()
+            stage_names = ("time_map", "freq_map", "fused_map")
+            view_losses = []
+            for student_stages in (
+                channel["stages_1"],
+                channel["stages_2"],
+            ):
+                stage_loss = sum(
+                    _normalized_map_distance(
+                        student_stages[name],
+                        teacher_stages[name],
+                    )
+                    for name in stage_names
+                ) / len(stage_names)
+                view_losses.append(stage_loss)
+            restoration_loss = sum(view_losses) / len(view_losses)
+            losses[loss_name] = (
+                config["lfdb"].get("multilevel_restore_weight", 0.2)
+                * restoration_loss
+            )
 
         elif loss_name == "rest_adv":
             channel = get_channel_outputs()
@@ -622,7 +748,10 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
         encoder.eval()
         if lfdb is not None:
             lfdb.eval()
-            lfdb.feature_restorer.train()
+            if getattr(lfdb, "feature_restorer", None) is not None:
+                lfdb.feature_restorer.train()
+        if config["lfdb"].get("use_multilevel_restoration", False):
+            encoder.tf_enhancer.train()
         if config["lfdb"].get("selective_encoder_finetune", False):
             for module in _get_encoder_adaptation_modules(encoder):
                 module.train()
@@ -886,7 +1015,10 @@ def pretext(config=None):
     teacher_encoder = None
     teacher_lfdb = None
     encoder_adaptation_modules = []
-    if config["lfdb"].get("use_feature_restorer", False):
+    if (
+        config["lfdb"].get("use_feature_restorer", False)
+        or config["lfdb"].get("use_multilevel_restoration", False)
+    ):
         if lfdb is None:
             raise ValueError("Feature restoration requires the local fingerprint module.")
         if config["lfdb"].get("teacher_mode") == "fixed":
@@ -898,11 +1030,24 @@ def pretext(config=None):
         _prepare_teacher(teacher_encoder)
         _prepare_teacher(teacher_lfdb)
         if config["lfdb"].get("restoration_only", False):
-            encoder_adaptation_modules = _configure_restoration_only(
-                encoder,
-                lfdb,
-                config["lfdb"].get("selective_encoder_finetune", False),
-            )
+            if config["lfdb"].get("use_multilevel_restoration", False):
+                encoder_adaptation_modules = (
+                    _configure_multilevel_restoration(
+                        encoder,
+                        lfdb,
+                        config["lfdb"].get(
+                            "selective_encoder_finetune", False
+                        ),
+                    )
+                )
+            else:
+                encoder_adaptation_modules = _configure_restoration_only(
+                    encoder,
+                    lfdb,
+                    config["lfdb"].get(
+                        "selective_encoder_finetune", False
+                    ),
+                )
 
     cls = torch.nn.CrossEntropyLoss()
     mml = create_model(config["mml"]["root"], beta=config["mml"]["beta"])
@@ -910,8 +1055,18 @@ def pretext(config=None):
 
     optimizer_config = config["optimizer"]
     if config["lfdb"].get("restoration_only", False):
+        if config["lfdb"].get("use_multilevel_restoration", False):
+            restoration_parameters = list(
+                encoder.tf_enhancer.parameters()
+            )
+            restoration_name = "tf_enhancer"
+        else:
+            restoration_parameters = list(
+                lfdb.feature_restorer.parameters()
+            )
+            restoration_name = "restorer"
         parameter_groups = [{
-            "params": list(lfdb.feature_restorer.parameters()),
+            "params": restoration_parameters,
             "lr": optimizer_config["lr"],
         }]
         if encoder_adaptation_modules:
@@ -929,7 +1084,8 @@ def pretext(config=None):
                 "Transformer layer, and output normalization."
             )
             logger.info(
-                "==> Trainable parameters: restorer="
+                "==> Trainable parameters: "
+                f"{restoration_name}="
                 f"{sum(parameter.numel() for parameter in parameter_groups[0]['params'])}, "
                 "encoder_adapter="
                 f"{sum(parameter.numel() for parameter in adaptation_parameters)}."
