@@ -172,7 +172,12 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 elif training and epoch < very_low_start:
                     view_2_levels = tuple(level for level in snr_levels if -5.0 <= level <= 5.0)
                 else:
-                    view_2_levels = tuple(level for level in snr_levels if level <= 5.0)
+                    if config["lfdb"].get("is_clean_anchor_v3", False):
+                        extreme_levels = tuple(level for level in snr_levels if level <= -10.0)
+                        transition_levels = tuple(level for level in snr_levels if -5.0 <= level <= 0.0)
+                        view_2_levels = extreme_levels + extreme_levels + transition_levels
+                    else:
+                        view_2_levels = tuple(level for level in snr_levels if level <= 5.0)
             elif config["lfdb"].get("is_clean_anchor", False) and training:
                 minimum_snr = (
                     -10.0 if epoch >= config["lfdb"].get("very_low_snr_start_epoch", 60)
