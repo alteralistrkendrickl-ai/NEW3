@@ -138,7 +138,14 @@ def _multilevel_curriculum_levels(config, epoch, training):
         return (0.0, -5.0)
     if epoch < very_low_start:
         return (-5.0,) * 7 + (-10.0,) * 3
-    return (-10.0,) * 6 + (-5.0,) * 3 + (0.0,)
+    extreme_weight, low_weight, clean_weight = config["lfdb"].get(
+        "multilevel_snr_weights", (6, 3, 1)
+    )
+    return (
+        (-10.0,) * extreme_weight
+        + (-5.0,) * low_weight
+        + (0.0,) * clean_weight
+    )
 
 
 def _prepare_teacher(module):

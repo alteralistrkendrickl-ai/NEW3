@@ -301,7 +301,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     ema_decay=0.996, ema_start_epoch=1,
                     teacher_run_root="", teacher_checkpoint="best",
                     restoration_only=False, selective_encoder_finetune=False,
-                    encoder_adapt_lr=1e-5, multilevel_restore_weight=0.2):
+                    encoder_adapt_lr=1e-5, multilevel_restore_weight=0.2,
+                    multilevel_snr_weights=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -403,6 +404,14 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         type=float,
         default=multilevel_restore_weight,
     )
+    parser.add_argument(
+        "--multilevel_snr_weights",
+        type=int,
+        nargs=3,
+        metavar=("EXTREME", "LOW", "CLEAN"),
+        default=multilevel_snr_weights or [6, 3, 1],
+        help="Sampling weights for -10, -5, and 0 dB in the final restoration stage.",
+    )
     parser.add_argument("--snr_levels", type=float, nargs="+", default=snr_levels or [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0])
     explicit_tsla_conf = tsla_conf is not None
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
@@ -435,6 +444,10 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         raise ValueError("encoder_adapt_lr must be positive")
     if opt.multilevel_restore_weight < 0:
         raise ValueError("multilevel_restore_weight must be non-negative")
+    if any(weight < 0 for weight in opt.multilevel_snr_weights):
+        raise ValueError("multilevel_snr_weights must be non-negative")
+    if sum(opt.multilevel_snr_weights) == 0:
+        raise ValueError("at least one multilevel SNR weight must be positive")
 
     method_name = opt.method_name.strip()
     if method_name.upper() == "NEW3":
@@ -607,6 +620,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "selective_encoder_finetune": opt.selective_encoder_finetune,
             "encoder_adapt_lr": opt.encoder_adapt_lr,
             "multilevel_restore_weight": opt.multilevel_restore_weight,
+            "multilevel_snr_weights": tuple(opt.multilevel_snr_weights),
             "clean_cons_weight": opt.clean_cons_weight,
             "noisy_id_weight": opt.noisy_id_weight,
             "low_snr_start_epoch": opt.low_snr_start_epoch,
