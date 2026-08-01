@@ -49,6 +49,27 @@ dataset_path_dict = {
         "pt_class": 90,
         "ft_class": 30
     },
+    "manytx-iid": {
+        "name": "manytx_iid",
+        "linux": "~/Datasets/ManyTx",
+        "windows": os.path.join(PROJECT_ROOT, "Datasets", "ManyTx"),
+        "pt_class": 90,
+        "ft_class": 30
+    },
+    "manytx-cross-rx": {
+        "name": "manytx_cross_rx",
+        "linux": "~/Datasets/ManyTx_cross_rx",
+        "windows": os.path.join(PROJECT_ROOT, "Datasets", "ManyTx_cross_rx"),
+        "pt_class": 90,
+        "ft_class": 30
+    },
+    "manytx-cross-day": {
+        "name": "manytx_cross_day",
+        "linux": "~/Datasets/ManyTx_cross_day",
+        "windows": os.path.join(PROJECT_ROOT, "Datasets", "ManyTx_cross_day"),
+        "pt_class": 90,
+        "ft_class": 30
+    },
     "single": {
         "name": "single",
         "linux": "~/Datasets/Single",

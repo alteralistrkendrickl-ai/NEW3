@@ -17,7 +17,7 @@ def build_parser():
     parser.add_argument("--pretrain_date", default="")
     parser.add_argument("--feature_dim", type=int, default=1024)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--split", choices=["train", "test"], default="test")
+    parser.add_argument("--split", choices=["train", "val", "test"], default="test")
     parser.add_argument("--snr", type=float, default=None)
     parser.add_argument("--snr_levels", type=float, nargs="+", default=[-10, -5, 0, 5, 10, 15, 20])
     parser.add_argument("--TSLA_len", type=int, default=256)

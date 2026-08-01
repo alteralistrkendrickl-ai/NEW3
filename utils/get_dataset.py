@@ -230,17 +230,36 @@ def get_pretrain_dataloader(opt):
     )
     labels = np.load(y_path, mmap_mode="r")
     all_indices = np.arange(len(labels))
-    train_indices, val_indices = train_test_split(
-        all_indices,
-        test_size=opt_dataset["ratio"],
-        random_state=opt["random_seed"],
-        stratify=np.asarray(labels),
-    )
+    try:
+        val_x_path, val_y_path = _dataset_paths(
+            opt_dataset["root"], opt_dataset["num_classes"], "val"
+        )
+    except FileNotFoundError:
+        train_indices, val_indices = train_test_split(
+            all_indices,
+            test_size=opt_dataset["ratio"],
+            random_state=opt["random_seed"],
+            stratify=np.asarray(labels),
+        )
+        val_dataset = PretrainIQDataset(
+            x_path,
+            y_path,
+            val_indices,
+            rot_num,
+            opt_dataset["normalize"],
+        )
+    else:
+        train_indices = all_indices
+        val_labels = np.load(val_y_path, mmap_mode="r")
+        val_dataset = PretrainIQDataset(
+            val_x_path,
+            val_y_path,
+            np.arange(len(val_labels)),
+            rot_num,
+            opt_dataset["normalize"],
+        )
     train_dataset = PretrainIQDataset(
         x_path, y_path, train_indices, rot_num, opt_dataset["normalize"]
-    )
-    val_dataset = PretrainIQDataset(
-        x_path, y_path, val_indices, rot_num, opt_dataset["normalize"]
     )
 
     pin_memory = opt.get("device") == "cuda"
