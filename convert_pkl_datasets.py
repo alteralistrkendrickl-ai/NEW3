@@ -305,6 +305,7 @@ def convert_pkl(
     val_day=None,
     test_day=None,
 ):
+    output_dir = os.path.expanduser(output_dir)
     print(f"Loading {path}", flush=True)
     with open(os.path.expanduser(path), "rb") as file:
         data = pickle.load(file)
