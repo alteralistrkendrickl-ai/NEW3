@@ -1,6 +1,7 @@
 import argparse
 import json
 
+import numpy as np
 import torch
 
 from utils.robust_eval import evaluate_loader, load_eval_loader, load_robust_models
@@ -20,6 +21,8 @@ def build_parser():
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")
     parser.add_argument("--snr", type=float, default=None)
     parser.add_argument("--snr_levels", type=float, nargs="+", default=[-10, -5, 0, 5, 10, 15, 20])
+    parser.add_argument("--eval_seed", type=int, default=2024)
+    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--TSLA_len", type=int, default=256)
     parser.add_argument("--TSLA_patch", type=int, default=16)
     parser.add_argument("--TSLA_channels", type=int, default=2)
@@ -33,6 +36,8 @@ def build_parser():
 
 if __name__ == "__main__":
     args = build_parser().parse_args()
+    np.random.seed(args.eval_seed)
+    torch.manual_seed(args.eval_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     encoder, lfdb, classifier, run_root = load_robust_models(args, device)
     loader, _ = load_eval_loader(args, split=args.split, snr=args.snr)
