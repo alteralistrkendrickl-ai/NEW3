@@ -30,8 +30,9 @@ evaluation use this project's controlled protocol.
 | --- | --- | --- |
 | `CVTSLANet-Supervised` | CVTSLANet | none |
 | `MSFTFNet-Supervised` | MSFTFNet | none |
-| `MSFTFNet-OnlineAWGN` | MSFTFNet | online AWGN sampled from -10 to 20 dB |
-| `WiSigCNN-OnlineAWGN` | official WiSig CNN topology | online AWGN sampled from -10 to 20 dB |
+| `MSFTFNet-OnlineAWGN` | MSFTFNet | noise-only online AWGN diagnostic |
+| `MSFTFNet-OnlineAWGN-Paired` | MSFTFNet | paired clean/noisy identity training |
+| `WiSigCNN-OnlineAWGN` | official WiSig CNN topology | paired clean/noisy identity training |
 
 The proposed method remains
 `RobustSEI_CleanAnchorV4_MultiLevelRestore`; it is not retrained by these scripts.
@@ -45,7 +46,7 @@ cd ~/yl/NP3MC/NEW3
 conda activate p3mc
 
 python train_low_snr_baseline.py \
-  --baseline MSFTFNet-OnlineAWGN \
+  --baseline MSFTFNet-OnlineAWGN-Paired \
   --epoch 5 --batch_size 128 --random_seed 9999
 ```
 
@@ -66,7 +67,7 @@ nohup python train_low_snr_baseline.py \
   > baseline_msftf_supervised.log 2>&1 &
 
 nohup python train_low_snr_baseline.py \
-  --baseline MSFTFNet-OnlineAWGN \
+  --baseline MSFTFNet-OnlineAWGN-Paired \
   --epoch 120 --batch_size 128 --random_seed 2024 \
   > baseline_msftf_awgn.log 2>&1 &
 
@@ -89,7 +90,7 @@ Evaluate a completed baseline with:
 
 ```bash
 python evaluate_low_snr_baseline.py \
-  --baseline MSFTFNet-OnlineAWGN \
+  --baseline MSFTFNet-OnlineAWGN-Paired \
   --checkpoint best \
   --train_seed 2024 --eval_seed 2024 --repeats 5 \
   | tee baseline_msftf_awgn_eval.log
@@ -103,9 +104,11 @@ runs/LowSNR_Baselines/<baseline>/manytx/seed_2024/evaluation_best.json
 
 ## Interpretation
 
-The primary comparison is V4 against `MSFTFNet-OnlineAWGN`. Both use the same
-MSFTFNet encoder, so their difference isolates clean-anchor and multilevel
-restoration training. `MSFTFNet-Supervised` measures the value of AWGN training.
+The primary comparison is V4 against `MSFTFNet-OnlineAWGN-Paired`. Both use the
+same MSFTFNet encoder and both receive clean/noisy identity supervision, so their
+difference isolates feature alignment and multilevel restoration. The noise-only
+variant is diagnostic only because it can sacrifice clean-domain performance.
+`MSFTFNet-Supervised` measures the value of AWGN training.
 `CVTSLANet-Supervised` measures the value of the multiscale time-frequency
 encoder. `WiSigCNN-OnlineAWGN` is an external public architecture baseline.
 

@@ -32,9 +32,15 @@ BASELINE_SPECS = {
         "feature_dim": 1024,
         "lr": 1e-3,
     },
+    "MSFTFNet-OnlineAWGN-Paired": {
+        "encoder": "MSFTFNet",
+        "augmentation": "paired_online_awgn",
+        "feature_dim": 1024,
+        "lr": 1e-3,
+    },
     "WiSigCNN-OnlineAWGN": {
         "encoder": "WiSigCNN",
-        "augmentation": "online_awgn",
+        "augmentation": "paired_online_awgn",
         "feature_dim": 80,
         "lr": 5e-4,
     },

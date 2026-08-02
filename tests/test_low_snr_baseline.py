@@ -1,7 +1,7 @@
 import torch
 
 from models.WiSigCNNFeature import WiSigCNN
-from utils.low_snr_baseline import add_awgn_torch
+from utils.low_snr_baseline import BASELINE_SPECS, add_awgn_torch
 
 
 def test_wisig_cnn_feature_shape():
@@ -19,3 +19,14 @@ def test_awgn_matches_requested_per_channel_snr():
     noise_power = noise.square().mean(dim=-1)
     measured = 10.0 * torch.log10(signal_power / noise_power)
     assert torch.allclose(measured.mean(), torch.tensor(-5.0), atol=0.05)
+
+
+def test_main_online_awgn_baselines_keep_clean_pairs():
+    assert (
+        BASELINE_SPECS["MSFTFNet-OnlineAWGN-Paired"]["augmentation"]
+        == "paired_online_awgn"
+    )
+    assert (
+        BASELINE_SPECS["WiSigCNN-OnlineAWGN"]["augmentation"]
+        == "paired_online_awgn"
+    )

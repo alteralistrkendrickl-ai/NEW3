@@ -97,8 +97,21 @@ def main(args):
                 )
                 inputs = add_awgn_torch(inputs, snr)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(inputs)
-            loss = F.cross_entropy(logits, targets)
+            if spec["augmentation"] == "paired_online_awgn":
+                snr = torch.empty(inputs.shape[0], device=device).uniform_(
+                    args.awgn_min, args.awgn_max
+                )
+                noisy_inputs = add_awgn_torch(inputs, snr)
+                paired_logits = model(torch.cat([inputs, noisy_inputs], dim=0))
+                clean_logits, noisy_logits = paired_logits.chunk(2, dim=0)
+                loss = 0.5 * (
+                    F.cross_entropy(clean_logits, targets)
+                    + F.cross_entropy(noisy_logits, targets)
+                )
+                logits = noisy_logits
+            else:
+                logits = model(inputs)
+                loss = F.cross_entropy(logits, targets)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
