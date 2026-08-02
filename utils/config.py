@@ -233,6 +233,28 @@ def use_triview_curriculum_no_restore(method_name):
     return "triviewnorestore" in name or "tri_view_no_restore" in name
 
 
+def use_pairview_curriculum_no_restore(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "pairviewcurriculum" in name or "pair_view_curriculum" in name
+
+
+def use_triview_fixed_mix_no_restore(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "triviewfixedmix" in name or "tri_view_fixed_mix" in name
+
+
+def use_identity_only_low_snr_ablation(method_name):
+    return (
+        use_triview_curriculum_no_restore(method_name)
+        or use_pairview_curriculum_no_restore(method_name)
+        or use_triview_fixed_mix_no_restore(method_name)
+    )
+
+
 def use_feature_restoration(method_name):
     return (
         use_ema_restoration(method_name)
@@ -489,7 +511,7 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if use_triview_curriculum_no_restore(method_name) and opt.use_lfdb:
+    if use_identity_only_low_snr_ablation(method_name) and opt.use_lfdb:
         loss_item = ["id"]
     elif use_multilevel_restoration(method_name) and opt.use_lfdb:
         loss_item = ["id", "multi_restore"]
@@ -636,6 +658,12 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             ),
             "use_triview_curriculum_no_restore": (
                 use_triview_curriculum_no_restore(method_name)
+            ),
+            "use_pairview_curriculum_no_restore": (
+                use_pairview_curriculum_no_restore(method_name)
+            ),
+            "use_triview_fixed_mix_no_restore": (
+                use_triview_fixed_mix_no_restore(method_name)
             ),
             "teacher_mode": (
                 "fixed"

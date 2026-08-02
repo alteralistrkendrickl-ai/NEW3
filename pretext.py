@@ -148,6 +148,17 @@ def _multilevel_curriculum_levels(config, epoch, training):
     )
 
 
+def _fixed_low_snr_mix_levels(config):
+    extreme_weight, low_weight, clean_weight = config["lfdb"].get(
+        "multilevel_snr_weights", (6, 7, 2)
+    )
+    return (
+        (-10.0,) * extreme_weight
+        + (-5.0,) * low_weight
+        + (0.0,) * clean_weight
+    )
+
+
 def _prepare_teacher(module):
     if module is None:
         return
@@ -335,18 +346,31 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             snr_levels = config["augmentation"].get("snr_levels")
             view_1_levels = snr_levels
             view_2_levels = snr_levels
-            uses_multilevel_curriculum = (
+            uses_staged_curriculum = (
                 config["lfdb"].get("use_multilevel_restoration", False)
                 or config["lfdb"].get(
                     "use_triview_curriculum_no_restore", False
                 )
+                or config["lfdb"].get(
+                    "use_pairview_curriculum_no_restore", False
+                )
             )
-            if uses_multilevel_curriculum:
+            uses_fixed_mix = config["lfdb"].get(
+                "use_triview_fixed_mix_no_restore", False
+            )
+            pairview = config["lfdb"].get(
+                "use_pairview_curriculum_no_restore", False
+            )
+            if uses_staged_curriculum:
                 curriculum_levels = _multilevel_curriculum_levels(
                     config, epoch, training
                 )
                 view_1_levels = curriculum_levels
                 view_2_levels = curriculum_levels
+            elif uses_fixed_mix:
+                fixed_levels = _fixed_low_snr_mix_levels(config)
+                view_1_levels = fixed_levels
+                view_2_levels = fixed_levels
             elif config["lfdb"].get("is_clean_anchor_v2", False):
                 low_start = config["lfdb"].get("low_snr_start_epoch", 20)
                 very_low_start = config["lfdb"].get("very_low_snr_start_epoch", 60)
@@ -372,15 +396,18 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 view_2_levels = view_1_levels
             if not view_1_levels or not view_2_levels:
                 raise ValueError("The configured SNR levels do not support the active curriculum stage.")
-            if uses_multilevel_curriculum:
+            if uses_staged_curriculum or uses_fixed_mix:
                 view_1, snr_1, fading_1 = random_awgn_level_view(
                     mixed_inputs,
                     view_1_levels,
                 )
-                view_2, snr_2, fading_2 = random_awgn_level_view(
-                    mixed_inputs,
-                    view_2_levels,
-                )
+                if pairview:
+                    view_2, snr_2, fading_2 = view_1, snr_1, fading_1
+                else:
+                    view_2, snr_2, fading_2 = random_awgn_level_view(
+                        mixed_inputs,
+                        view_2_levels,
+                    )
             else:
                 view_1, snr_1, fading_1 = random_joint_interference_view(
                     mixed_inputs,
@@ -427,9 +454,12 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 out_1 = lfdb(
                     _forward_feature_map(encoder, view_1), return_all=True
                 )
-                out_2 = lfdb(
-                    _forward_feature_map(encoder, view_2), return_all=True
-                )
+                if pairview:
+                    out_2 = out_1
+                else:
+                    out_2 = lfdb(
+                        _forward_feature_map(encoder, view_2), return_all=True
+                    )
         else:
             out_1 = lfdb(_forward_features(encoder, view_1), return_all=True)
             out_2 = lfdb(_forward_features(encoder, view_2), return_all=True)
@@ -792,6 +822,12 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
             or config["lfdb"].get(
                 "use_triview_curriculum_no_restore", False
             )
+            or config["lfdb"].get(
+                "use_pairview_curriculum_no_restore", False
+            )
+            or config["lfdb"].get(
+                "use_triview_fixed_mix_no_restore", False
+            )
         ):
             encoder.tf_enhancer.train()
         if config["lfdb"].get("selective_encoder_finetune", False):
@@ -1057,12 +1093,14 @@ def pretext(config=None):
     teacher_encoder = None
     teacher_lfdb = None
     encoder_adaptation_modules = []
-    triview_no_restore = config["lfdb"].get(
-        "use_triview_curriculum_no_restore", False
-    )
-    if triview_no_restore:
+    identity_only_ablation = any((
+        config["lfdb"].get("use_triview_curriculum_no_restore", False),
+        config["lfdb"].get("use_pairview_curriculum_no_restore", False),
+        config["lfdb"].get("use_triview_fixed_mix_no_restore", False),
+    ))
+    if identity_only_ablation:
         if lfdb is None:
-            raise ValueError("Tri-view no-restore training requires LFDB.")
+            raise ValueError("Low-SNR identity ablations require LFDB.")
         _load_fixed_teacher_source(config, encoder, lfdb, device, logger)
         if config["lfdb"].get("restoration_only", False):
             encoder_adaptation_modules = _configure_triview_no_restore(
@@ -1114,7 +1152,7 @@ def pretext(config=None):
     if config["lfdb"].get("restoration_only", False):
         if (
             config["lfdb"].get("use_multilevel_restoration", False)
-            or triview_no_restore
+            or identity_only_ablation
         ):
             restoration_parameters = list(
                 encoder.tf_enhancer.parameters()
