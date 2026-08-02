@@ -226,6 +226,13 @@ def use_multilevel_restoration(method_name):
     )
 
 
+def use_triview_curriculum_no_restore(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "triviewnorestore" in name or "tri_view_no_restore" in name
+
+
 def use_feature_restoration(method_name):
     return (
         use_ema_restoration(method_name)
@@ -482,7 +489,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if use_multilevel_restoration(method_name) and opt.use_lfdb:
+    if use_triview_curriculum_no_restore(method_name) and opt.use_lfdb:
+        loss_item = ["id"]
+    elif use_multilevel_restoration(method_name) and opt.use_lfdb:
         loss_item = ["id", "multi_restore"]
     elif use_feature_restoration(method_name) and opt.use_lfdb:
         loss_item = ["id", "clean_cons"]
@@ -624,6 +633,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             ),
             "use_multilevel_restoration": use_multilevel_restoration(
                 method_name
+            ),
+            "use_triview_curriculum_no_restore": (
+                use_triview_curriculum_no_restore(method_name)
             ),
             "teacher_mode": (
                 "fixed"

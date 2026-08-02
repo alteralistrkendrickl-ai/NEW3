@@ -211,6 +211,30 @@ def _configure_multilevel_restoration(
     return adaptation_modules
 
 
+def _configure_triview_no_restore(
+    encoder,
+    lfdb,
+    selective_encoder_finetune=False,
+):
+    if not hasattr(encoder, "tf_enhancer"):
+        raise ValueError(
+            "Tri-view no-restore training currently requires MSFTFNet."
+        )
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
+    for parameter in lfdb.parameters():
+        parameter.requires_grad_(False)
+    for parameter in encoder.tf_enhancer.parameters():
+        parameter.requires_grad_(True)
+    adaptation_modules = []
+    if selective_encoder_finetune:
+        adaptation_modules = _get_encoder_adaptation_modules(encoder)
+        for module in adaptation_modules:
+            for parameter in module.parameters():
+                parameter.requires_grad_(True)
+    return adaptation_modules
+
+
 def _load_fixed_teacher_source(config, encoder, lfdb, device, logger):
     run_root = os.path.expanduser(config["lfdb"].get("teacher_run_root", ""))
     checkpoint_name = config["lfdb"].get("teacher_checkpoint", "best")
@@ -240,7 +264,7 @@ def _load_fixed_teacher_source(config, encoder, lfdb, device, logger):
             f"Missing: {invalid_missing}; unexpected: "
             f"{incompatible.unexpected_keys}"
         )
-    logger.info(f"==> Loaded fixed teacher and student initialization from: {run_root}")
+    logger.info(f"==> Loaded pretrained encoder and LFDB initialization from: {run_root}")
 
 
 @torch.no_grad()
@@ -311,7 +335,13 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             snr_levels = config["augmentation"].get("snr_levels")
             view_1_levels = snr_levels
             view_2_levels = snr_levels
-            if config["lfdb"].get("use_multilevel_restoration", False):
+            uses_multilevel_curriculum = (
+                config["lfdb"].get("use_multilevel_restoration", False)
+                or config["lfdb"].get(
+                    "use_triview_curriculum_no_restore", False
+                )
+            )
+            if uses_multilevel_curriculum:
                 curriculum_levels = _multilevel_curriculum_levels(
                     config, epoch, training
                 )
@@ -342,7 +372,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 view_2_levels = view_1_levels
             if not view_1_levels or not view_2_levels:
                 raise ValueError("The configured SNR levels do not support the active curriculum stage.")
-            if config["lfdb"].get("use_multilevel_restoration", False):
+            if uses_multilevel_curriculum:
                 view_1, snr_1, fading_1 = random_awgn_level_view(
                     mixed_inputs,
                     view_1_levels,
@@ -757,7 +787,12 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
             lfdb.eval()
             if getattr(lfdb, "feature_restorer", None) is not None:
                 lfdb.feature_restorer.train()
-        if config["lfdb"].get("use_multilevel_restoration", False):
+        if (
+            config["lfdb"].get("use_multilevel_restoration", False)
+            or config["lfdb"].get(
+                "use_triview_curriculum_no_restore", False
+            )
+        ):
             encoder.tf_enhancer.train()
         if config["lfdb"].get("selective_encoder_finetune", False):
             for module in _get_encoder_adaptation_modules(encoder):
@@ -1022,6 +1057,19 @@ def pretext(config=None):
     teacher_encoder = None
     teacher_lfdb = None
     encoder_adaptation_modules = []
+    triview_no_restore = config["lfdb"].get(
+        "use_triview_curriculum_no_restore", False
+    )
+    if triview_no_restore:
+        if lfdb is None:
+            raise ValueError("Tri-view no-restore training requires LFDB.")
+        _load_fixed_teacher_source(config, encoder, lfdb, device, logger)
+        if config["lfdb"].get("restoration_only", False):
+            encoder_adaptation_modules = _configure_triview_no_restore(
+                encoder,
+                lfdb,
+                config["lfdb"].get("selective_encoder_finetune", False),
+            )
     if (
         config["lfdb"].get("use_feature_restorer", False)
         or config["lfdb"].get("use_multilevel_restoration", False)
@@ -1036,6 +1084,8 @@ def pretext(config=None):
         teacher_lfdb = deepcopy(lfdb)
         _prepare_teacher(teacher_encoder)
         _prepare_teacher(teacher_lfdb)
+        if config["lfdb"].get("teacher_mode") == "fixed":
+            logger.info("==> Created frozen teacher snapshot from initialization.")
         if config["lfdb"].get("restoration_only", False):
             if config["lfdb"].get("use_multilevel_restoration", False):
                 encoder_adaptation_modules = (
@@ -1062,7 +1112,10 @@ def pretext(config=None):
 
     optimizer_config = config["optimizer"]
     if config["lfdb"].get("restoration_only", False):
-        if config["lfdb"].get("use_multilevel_restoration", False):
+        if (
+            config["lfdb"].get("use_multilevel_restoration", False)
+            or triview_no_restore
+        ):
             restoration_parameters = list(
                 encoder.tf_enhancer.parameters()
             )
