@@ -1,7 +1,11 @@
 import torch
 
 from models.WiSigCNNFeature import WiSigCNN
-from utils.low_snr_baseline import BASELINE_SPECS, add_awgn_torch
+from utils.low_snr_baseline import (
+    BASELINE_SPECS,
+    PooledEncoderClassifier,
+    add_awgn_torch,
+)
 
 
 def test_wisig_cnn_feature_shape():
@@ -26,6 +30,26 @@ def test_main_online_awgn_baselines_keep_clean_pairs():
         BASELINE_SPECS["MSFTFNet-OnlineAWGN-Paired"]["augmentation"]
         == "paired_online_awgn"
     )
+
+
+def test_pooled_classifier_bypasses_projection_head():
+    class Encoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.projection_called = False
+
+        def forward_map(self, inputs):
+            return inputs
+
+        def forward(self, inputs):
+            self.projection_called = True
+            return inputs.mean(dim=-1)
+
+    encoder = Encoder()
+    model = PooledEncoderClassifier(encoder, num_classes=3, map_channels=2)
+    output = model(torch.randn(4, 2, 16))
+    assert output.shape == (4, 3)
+    assert not encoder.projection_called
     assert (
         BASELINE_SPECS["WiSigCNN-OnlineAWGN"]["augmentation"]
         == "paired_online_awgn"

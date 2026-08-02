@@ -87,6 +87,7 @@ def main(args):
         model.train()
         total_loss = 0.0
         correct = 0
+        clean_correct = 0
         count = 0
         for inputs, targets in train_loader:
             inputs = inputs.to(device)
@@ -109,9 +110,13 @@ def main(args):
                     + F.cross_entropy(noisy_logits, targets)
                 )
                 logits = noisy_logits
+                clean_correct += (
+                    clean_logits.argmax(dim=1) == targets
+                ).sum().item()
             else:
                 logits = model(inputs)
                 loss = F.cross_entropy(logits, targets)
+                clean_correct += (logits.argmax(dim=1) == targets).sum().item()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
@@ -129,10 +134,17 @@ def main(args):
             val_low_snr.append(evaluate(model, val_loader, device, snr=snr))
         selection_acc = sum(item["acc"] for item in val_low_snr) / len(val_low_snr)
         selection_f1 = sum(item["macro_f1"] for item in val_low_snr) / len(val_low_snr)
+        if spec["augmentation"] == "paired_online_awgn":
+            train_metrics = (
+                f"train_noisy_acc={100.0 * correct / max(count, 1):.2f}%, "
+                f"train_clean_acc={100.0 * clean_correct / max(count, 1):.2f}%"
+            )
+        else:
+            train_metrics = f"train_acc={100.0 * correct / max(count, 1):.2f}%"
         print(
             f"Epoch {epoch + 1}/{args.epoch}: "
             f"loss={total_loss / max(count, 1):.6f}, "
-            f"train_acc={100.0 * correct / max(count, 1):.2f}%, "
+            f"{train_metrics}, "
             f"val_clean_acc={val_clean['acc']:.2f}%, "
             f"val_low_snr_acc={selection_acc:.2f}%, "
             f"val_low_snr_f1={selection_f1:.2f}%",

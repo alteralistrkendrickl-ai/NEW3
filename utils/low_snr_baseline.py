@@ -18,24 +18,28 @@ BASELINE_SPECS = {
         "encoder": "CVTSLANet",
         "augmentation": "clean",
         "feature_dim": 1024,
+        "map_channels": 128,
         "lr": 1e-3,
     },
     "MSFTFNet-Supervised": {
         "encoder": "MSFTFNet",
         "augmentation": "clean",
         "feature_dim": 1024,
+        "map_channels": 128,
         "lr": 1e-3,
     },
     "MSFTFNet-OnlineAWGN": {
         "encoder": "MSFTFNet",
         "augmentation": "online_awgn",
         "feature_dim": 1024,
+        "map_channels": 128,
         "lr": 1e-3,
     },
     "MSFTFNet-OnlineAWGN-Paired": {
         "encoder": "MSFTFNet",
         "augmentation": "paired_online_awgn",
         "feature_dim": 1024,
+        "map_channels": 128,
         "lr": 1e-3,
     },
     "WiSigCNN-OnlineAWGN": {
@@ -45,6 +49,35 @@ BASELINE_SPECS = {
         "lr": 5e-4,
     },
 }
+
+
+class PooledEncoderClassifier(nn.Module):
+    """Use local feature maps directly instead of an encoder projection head."""
+
+    def __init__(self, encoder, num_classes, map_channels=None):
+        super().__init__()
+        self.encoder = encoder
+        self.use_feature_map = map_channels is not None
+        classifier_dim = map_channels * 2 if self.use_feature_map else encoder.feature_dim
+        self.classifier = nn.Linear(classifier_dim, num_classes)
+
+    def forward(self, inputs):
+        if self.use_feature_map:
+            feature_map = self.encoder.forward_map(inputs)
+            if feature_map.ndim != 3:
+                raise ValueError(
+                    "forward_map must return [batch, channels, positions]."
+                )
+            features = torch.cat(
+                [
+                    feature_map.mean(dim=-1),
+                    feature_map.max(dim=-1).values,
+                ],
+                dim=1,
+            )
+        else:
+            features = self.encoder(inputs)
+        return self.classifier(features)
 
 
 def set_reproducible_seed(seed):
@@ -184,8 +217,11 @@ def build_model(baseline, num_classes, device):
         depth=3,
         dropout_rate=0.3 if encoder_name != "WiSigCNN" else 0.5,
     )
-    classifier = nn.Linear(spec["feature_dim"], num_classes)
-    return nn.Sequential(encoder, classifier).to(device)
+    return PooledEncoderClassifier(
+        encoder,
+        num_classes,
+        map_channels=spec.get("map_channels"),
+    ).to(device)
 
 
 def run_root(baseline, dataset, seed):
