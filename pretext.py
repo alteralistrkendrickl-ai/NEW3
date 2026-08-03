@@ -368,7 +368,11 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 view_1_levels = curriculum_levels
                 view_2_levels = curriculum_levels
             elif uses_fixed_mix:
-                fixed_levels = _fixed_low_snr_mix_levels(config)
+                fixed_levels = (
+                    _fixed_low_snr_mix_levels(config)
+                    if training
+                    else (-10.0, -5.0, 0.0)
+                )
                 view_1_levels = fixed_levels
                 view_2_levels = fixed_levels
             elif config["lfdb"].get("is_clean_anchor_v2", False):
