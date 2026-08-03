@@ -97,7 +97,7 @@ def load_encoder_weights(encoder, path, device):
     if isinstance(state, dict) and "encoder" in state:
         state = state["encoder"]
     incompatible = encoder.load_state_dict(state, strict=False)
-    allowed_missing_prefixes = ("tf_enhancer.",)
+    allowed_missing_prefixes = ("tf_enhancer.", "qc_router.")
     invalid_missing = [
         key
         for key in incompatible.missing_keys
@@ -245,4 +245,3 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res[0].item()
-

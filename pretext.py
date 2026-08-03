@@ -175,7 +175,13 @@ def _get_encoder_adaptation_modules(encoder):
     layers = getattr(encoder.encoder, "layers", None)
     if layers is None or len(layers) == 0:
         raise ValueError("MSFTFNet does not expose a trainable Transformer layer.")
-    return [encoder.fusion, layers[-1], encoder.norm]
+    if hasattr(encoder, "qc_router"):
+        fusion_modules = [encoder.qc_router]
+    elif getattr(encoder, "uses_fixed_fusion", False):
+        fusion_modules = []
+    else:
+        fusion_modules = [encoder.fusion]
+    return fusion_modules + [layers[-1], encoder.norm]
 
 
 def _configure_restoration_only(encoder, lfdb, selective_encoder_finetune=False):
@@ -317,6 +323,7 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
     lfdb_outputs = None
     channel_outputs = None
     clean_output = None
+    clean_stages = None
     teacher_clean_output = None
     teacher_clean_stages = None
     losses = {}
@@ -357,9 +364,13 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
             )
             uses_fixed_mix = config["lfdb"].get(
                 "use_triview_fixed_mix_no_restore", False
+            ) or config["lfdb"].get(
+                "use_pairview_fixed_mix_no_restore", False
             )
             pairview = config["lfdb"].get(
                 "use_pairview_curriculum_no_restore", False
+            ) or config["lfdb"].get(
+                "use_pairview_fixed_mix_no_restore", False
             )
             if uses_staged_curriculum:
                 curriculum_levels = _multilevel_curriculum_levels(
@@ -449,11 +460,18 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
         stages_1 = None
         stages_2 = None
         if local_method:
-            if config["lfdb"].get("use_multilevel_restoration", False):
+            if (
+                config["lfdb"].get("use_multilevel_restoration", False)
+                or config["lfdb"].get("use_quality_router", False)
+            ):
                 stages_1 = encoder.forward_stages(view_1)
-                stages_2 = encoder.forward_stages(view_2)
+                stages_2 = (
+                    stages_1 if pairview else encoder.forward_stages(view_2)
+                )
                 out_1 = lfdb(stages_1["feature_map"], return_all=True)
-                out_2 = lfdb(stages_2["feature_map"], return_all=True)
+                out_2 = out_1 if pairview else lfdb(
+                    stages_2["feature_map"], return_all=True
+                )
             else:
                 out_1 = lfdb(
                     _forward_feature_map(encoder, view_1), return_all=True
@@ -482,9 +500,13 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
         return channel_outputs
 
     def get_clean_output():
-        nonlocal clean_output
+        nonlocal clean_output, clean_stages
         if clean_output is None:
-            clean_features = _forward_feature_map(encoder, mixed_inputs)
+            if config["lfdb"].get("use_quality_router", False):
+                clean_stages = encoder.forward_stages(mixed_inputs)
+                clean_features = clean_stages["feature_map"]
+            else:
+                clean_features = _forward_feature_map(encoder, mixed_inputs)
             clean_output = lfdb(clean_features, return_all=True)
         return clean_output
 
@@ -587,6 +609,31 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
                 ).mean()
             )
             losses[loss_name] = config["lfdb"].get("clean_cons_weight", 0.2) * consistency
+
+        elif loss_name == "quality_rank":
+            channel = get_channel_outputs()
+            get_clean_output()
+            if clean_stages is None or channel["stages_1"] is None:
+                raise ValueError(
+                    "Quality ranking requires encoder stage diagnostics."
+                )
+            quality_ref = clean_stages["quality"]
+            quality_noisy = channel["stages_1"]["quality"]
+            margin = quality_ref.new_tensor(
+                config["lfdb"].get("quality_rank_margin", 0.1)
+            )
+            ranking = F.relu(
+                margin - (quality_ref - quality_noisy)
+            ).mean()
+            losses[loss_name] = (
+                config["lfdb"].get("quality_rank_weight", 0.1)
+                * ranking
+            )
+            metrics["quality_ref"] = quality_ref.mean().item()
+            metrics["quality_noisy"] = quality_noisy.mean().item()
+            metrics["route_entropy"] = channel["stages_1"][
+                "route_entropy"
+            ].mean().item()
 
         elif loss_name == "multi_restore":
             channel = get_channel_outputs()
@@ -797,6 +844,18 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
         else:
             raise ValueError(f"Unknown pretext loss: {loss_name}")
 
+    if config["lfdb"].get("use_quality_router", False):
+        channel = get_channel_outputs()
+        get_clean_output()
+        if clean_stages is not None and channel["stages_1"] is not None:
+            metrics["quality_ref"] = clean_stages["quality"].mean().item()
+            metrics["quality_noisy"] = channel["stages_1"][
+                "quality"
+            ].mean().item()
+            metrics["route_entropy"] = channel["stages_1"][
+                "route_entropy"
+            ].mean().item()
+
     ordered_losses = [losses[name] for name in config["mtl"]["item"]]
     if local_method and config["lfdb"].get("manual_local_loss", False):
         total_loss = sum(ordered_losses)
@@ -831,6 +890,9 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
             )
             or config["lfdb"].get(
                 "use_triview_fixed_mix_no_restore", False
+            )
+            or config["lfdb"].get(
+                "use_pairview_fixed_mix_no_restore", False
             )
         ):
             encoder.tf_enhancer.train()
@@ -882,6 +944,7 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
                     _ema_update_module(teacher_lfdb, lfdb, decay)
 
             for name, value in metrics.items():
+                metric_sums.setdefault(name, 0.0)
                 metric_sums[name] += value
             for index, loss in enumerate(loss_items):
                 loss_sums[index] += loss.item()
@@ -899,6 +962,13 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
         f"SEI-Acc: {metrics['sei_acc']:.2f}%, Mixed-Acc: {metrics['mixed_acc']:.2f}%, "
         f"{loss_text}"
     )
+    diagnostic_metrics = [
+        f"{name}: {value:.4f}"
+        for name, value in metrics.items()
+        if name not in {"rot_acc", "sei_acc", "mixed_acc"}
+    ]
+    if diagnostic_metrics:
+        logger.info("==> Router diagnostics: " + ", ".join(diagnostic_metrics))
 
     for name, value in metrics.items():
         writer.add_scalar(f"{split_name}/{name}", value, epoch)
@@ -1101,6 +1171,7 @@ def pretext(config=None):
         config["lfdb"].get("use_triview_curriculum_no_restore", False),
         config["lfdb"].get("use_pairview_curriculum_no_restore", False),
         config["lfdb"].get("use_triview_fixed_mix_no_restore", False),
+        config["lfdb"].get("use_pairview_fixed_mix_no_restore", False),
     ))
     if identity_only_ablation:
         if lfdb is None:

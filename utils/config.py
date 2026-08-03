@@ -99,6 +99,12 @@ model_path_dict = {
     "CVTSLANet": os.path.join(PROJECT_ROOT, "models", "CVTSLANetFeature.py"),
     "MSFTFNet": os.path.join(PROJECT_ROOT, "models", "MSFTFNetFeature.py"),
     "MSFTFNet-PQ": os.path.join(PROJECT_ROOT, "models", "MSFTFNetPQFeature.py"),
+    "MSFTFNet-Fixed": os.path.join(
+        PROJECT_ROOT, "models", "MSFTFNetFixedFeature.py"
+    ),
+    "MSFTFNet-QCRouter": os.path.join(
+        PROJECT_ROOT, "models", "MSFTFNetQCRouterFeature.py"
+    ),
     "SAFNet": os.path.join(PROJECT_ROOT, "models", "SAFNetFeature.py"),
     "CVTSLANet-Shallow": os.path.join(PROJECT_ROOT, "models", "SCVTSLANet.py"),
     "CVTSLANet-Deep": os.path.join(PROJECT_ROOT, "models", "DCVTSLANet.py"),
@@ -247,11 +253,36 @@ def use_triview_fixed_mix_no_restore(method_name):
     return "triviewfixedmix" in name or "tri_view_fixed_mix" in name
 
 
+def use_pairview_fixed_mix_no_restore(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return any(
+        token in name
+        for token in ("qcfixedavg", "qccurrentgate", "qcrouter")
+    )
+
+
+def use_quality_router(method_name):
+    if method_name is None:
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "qcrouter" in name
+
+
+def use_quality_rank(method_name):
+    if not use_quality_router(method_name):
+        return False
+    name = str(method_name).lower().replace("-", "_")
+    return "norank" not in name and "no_rank" not in name
+
+
 def use_identity_only_low_snr_ablation(method_name):
     return (
         use_triview_curriculum_no_restore(method_name)
         or use_pairview_curriculum_no_restore(method_name)
         or use_triview_fixed_mix_no_restore(method_name)
+        or use_pairview_fixed_mix_no_restore(method_name)
     )
 
 
@@ -352,7 +383,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
                     teacher_run_root="", teacher_checkpoint="best",
                     restoration_only=False, selective_encoder_finetune=False,
                     encoder_adapt_lr=1e-5, multilevel_restore_weight=0.2,
-                    multilevel_snr_weights=None):
+                    multilevel_snr_weights=None, quality_rank_weight=0.1,
+                    quality_rank_margin=0.1):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -462,6 +494,12 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         default=multilevel_snr_weights or [6, 3, 1],
         help="Sampling weights for -10, -5, and 0 dB in the final restoration stage.",
     )
+    parser.add_argument(
+        "--quality_rank_weight", type=float, default=quality_rank_weight
+    )
+    parser.add_argument(
+        "--quality_rank_margin", type=float, default=quality_rank_margin
+    )
     parser.add_argument("--snr_levels", type=float, nargs="+", default=snr_levels or [-10.0, -5.0, 0.0, 5.0, 10.0, 15.0, 20.0])
     explicit_tsla_conf = tsla_conf is not None
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
@@ -498,6 +536,10 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         raise ValueError("multilevel_snr_weights must be non-negative")
     if sum(opt.multilevel_snr_weights) == 0:
         raise ValueError("at least one multilevel SNR weight must be positive")
+    if opt.quality_rank_weight < 0:
+        raise ValueError("quality_rank_weight must be non-negative")
+    if opt.quality_rank_margin < 0:
+        raise ValueError("quality_rank_margin must be non-negative")
 
     method_name = opt.method_name.strip()
     if method_name.upper() == "NEW3":
@@ -511,7 +553,9 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     if is_joint_interference_method(method_name) and opt.TSLA_emb == 256 and not explicit_tsla_conf:
         opt.TSLA_emb = 128
     tsla_conf = TSLA_parse_args(opt)
-    if use_identity_only_low_snr_ablation(method_name) and opt.use_lfdb:
+    if use_quality_rank(method_name) and opt.use_lfdb:
+        loss_item = ["id", "quality_rank"]
+    elif use_identity_only_low_snr_ablation(method_name) and opt.use_lfdb:
         loss_item = ["id"]
     elif use_multilevel_restoration(method_name) and opt.use_lfdb:
         loss_item = ["id", "multi_restore"]
@@ -665,6 +709,12 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "use_triview_fixed_mix_no_restore": (
                 use_triview_fixed_mix_no_restore(method_name)
             ),
+            "use_pairview_fixed_mix_no_restore": (
+                use_pairview_fixed_mix_no_restore(method_name)
+            ),
+            "use_quality_router": use_quality_router(method_name),
+            "quality_rank_weight": opt.quality_rank_weight,
+            "quality_rank_margin": opt.quality_rank_margin,
             "teacher_mode": (
                 "fixed"
                 if (
